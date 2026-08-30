@@ -50,6 +50,7 @@ struct shape_container {
 
     std::vector<real> sphere_rigid;      ///< radius for sphere shapes
     std::vector<real3> box_like_rigid;   ///< dimensions for box-like shapes
+    std::vector<real4> cylshell_rigid;   ///< radius, half-height, bottom-cap flag, top-cap flag
     std::vector<real3> triangle_rigid;   ///< vertices of all triangle shapes (3 per shape)
     std::vector<real2> capsule_rigid;    ///< radius and half-length for capsule shapes
     std::vector<real4> rbox_like_rigid;  ///< dimensions and radius for rbox-like shapes

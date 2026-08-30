@@ -692,6 +692,7 @@ void ChSystemMulticore::SetNumThreads(int num_threads_chrono, int num_threads_co
         std::cout << "WARNING! Requested number of threads (" << num_threads_chrono << ") ";
         std::cout << "larger than maximum available (" << max_avail_threads << ")" << std::endl;
     }
+    current_threads = num_threads_chrono;
     omp_set_num_threads(num_threads_chrono);
 }
 
@@ -699,6 +700,7 @@ void ChSystemMulticore::EnableThreadTuning(int min_threads, int max_threads) {
     data_manager->settings.perform_thread_tuning = true;
     data_manager->settings.min_threads = min_threads;
     data_manager->settings.max_threads = max_threads;
+    current_threads = min_threads;
     omp_set_num_threads(min_threads);
 }
 

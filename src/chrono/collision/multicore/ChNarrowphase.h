@@ -33,15 +33,16 @@ namespace chrono {
 ///
 /// Currently supported analytical pair-wise interactions:
 /// <pre>
-///          |  sphere   box   rbox   capsule   cylinder   rcyl   trimesh
-/// ---------+----------------------------------------------------------
-/// sphere   |    Y       Y      Y       Y         Y        Y        Y
-/// box      |            Y      N       Y         N        N        Y
-/// rbox     |                   N       N         N        N        N
-/// capsule  |                           Y         N        N        N
-/// cylinder |                                     N        N        N
-/// rcyl     |                                              N        N
-/// trimesh  |                                                       N
+///          |  sphere   box   rbox   capsule   cylinder   cylshell   rcyl   trimesh
+/// ---------+---------------------------------------------------------------------
+/// sphere   |    Y       Y      Y       Y         Y          N        Y        Y
+/// box      |            Y      N       Y         N          Y        N        Y
+/// rbox     |                   N       N         N          N        N        N
+/// capsule  |                           Y         N          N        N        N
+/// cylinder |                                     N          Y        N        N
+/// cylshell |                                                N        N        N
+/// rcyl     |                                                         N        N
+/// trimesh  |                                                                  N
 /// </pre>
 class ChApi ChNarrowphase {
   public:

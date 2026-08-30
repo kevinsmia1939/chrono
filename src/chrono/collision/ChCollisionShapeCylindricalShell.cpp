@@ -31,8 +31,18 @@ ChCollisionShapeCylindricalShell::ChCollisionShapeCylindricalShell(std::shared_p
 }
 
 ChCollisionShapeCylindricalShell::ChCollisionShapeCylindricalShell(std::shared_ptr<ChContactMaterial> material,
+                                                                   double radius,
+                                                                   double height,
+                                                                   bool closed_bottom,
+                                                                   bool closed_top)
+    : ChCollisionShape(Type::CYLSHELL, material), closed_bottom(closed_bottom), closed_top(closed_top) {
+    gcylinder.r = radius;
+    gcylinder.h = height;
+}
+
+ChCollisionShapeCylindricalShell::ChCollisionShapeCylindricalShell(std::shared_ptr<ChContactMaterial> material,
                                                                    const ChCylinder& cyl)
-    : ChCollisionShape(Type::CYLINDER, material), gcylinder(cyl) {}
+    : ChCollisionShape(Type::CYLSHELL, material), gcylinder(cyl) {}
 
 void ChCollisionShapeCylindricalShell::ArchiveOut(ChArchiveOut& archive_out) {
     // version number
@@ -41,6 +51,8 @@ void ChCollisionShapeCylindricalShell::ArchiveOut(ChArchiveOut& archive_out) {
     ChCollisionShape::ArchiveOut(archive_out);
     // serialize all member data:
     archive_out << CHNVP(gcylinder);
+    archive_out << CHNVP(closed_bottom);
+    archive_out << CHNVP(closed_top);
 }
 
 void ChCollisionShapeCylindricalShell::ArchiveIn(ChArchiveIn& archive_in) {
@@ -50,6 +62,8 @@ void ChCollisionShapeCylindricalShell::ArchiveIn(ChArchiveIn& archive_in) {
     ChCollisionShape::ArchiveIn(archive_in);
     // stream in all member data:
     archive_in >> CHNVP(gcylinder);
+    archive_in >> CHNVP(closed_bottom);
+    archive_in >> CHNVP(closed_top);
 }
 
 }  // end namespace chrono

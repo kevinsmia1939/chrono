@@ -355,6 +355,60 @@ if(CH_ENABLE_MODULE_FEA)
 endif()
 
 #-----------------------------------------------------------------------------
+# MODULE for the multicore Python wrapper.
+#-----------------------------------------------------------------------------
+
+if(CH_ENABLE_MODULE_MULTICORE)
+
+  message(STATUS "Add python MULTICORE module")
+
+  set(CHPY_MULTICORE multicore)
+  set(CHPY_MULTICORE_MODULE_FILE ChModuleMulticore_python.i)
+
+  if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
+    set_source_files_properties(${CHPY_MULTICORE_MODULE_FILE} PROPERTIES COMPILE_FLAGS "-D_WIN32")
+  endif()
+  set_source_files_properties(${CHPY_MULTICORE_MODULE_FILE} PROPERTIES CPLUSPLUS ON)
+  if(MSVC)
+    set_source_files_properties(${CHPY_MULTICORE_MODULE_FILE} PROPERTIES COMPILE_OPTIONS ${CHRONO_SWIG_FLAGS})
+  endif()
+
+  swig_add_library(${CHPY_MULTICORE} LANGUAGE python SOURCES ${CHPY_MULTICORE_MODULE_FILE})
+  target_link_libraries(${CHPY_MULTICORE} PRIVATE Python3::Python Chrono_core Chrono_multicore)
+
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  elseif(MSVC)
+    target_compile_options(${CHPY_MULTICORE} PRIVATE "/wd4189" "/wd4275" "/wd4456" "/wd4702" "/wd4706")
+  else()
+    target_compile_options(${CHPY_MULTICORE} PRIVATE "-Wno-unused-variable")
+  endif()
+
+  if(APPLE)
+    target_link_options(${CHPY_MULTICORE} PRIVATE -flat_namespace -undefined dynamic_lookup)
+  endif()
+
+  set_target_properties(${CHPY_MULTICORE} PROPERTIES
+                        PROJECT_LABEL "Chrono_python_multicore"
+                        LIBRARY_OUTPUT_DIRECTORY "${CHPY_LIBRARY_OUTPUT_DIRECTORY}"
+                        SWIG_USE_TARGET_INCLUDE_DIRECTORIES TRUE)
+
+  add_dependencies(${CHPY_MULTICORE} Chrono_core Chrono_multicore core)
+
+  set(CHPY_MULTICORE_PY_FILE "${CMAKE_SWIG_OUTDIR}/${CHPY_MULTICORE}.py")
+  add_custom_command(TARGET ${CHPY_MULTICORE}
+                     POST_BUILD
+                     COMMAND ${CMAKE_COMMAND} -E copy ${CHPY_MULTICORE_PY_FILE} ${CHPY_LIBRARY_OUTPUT_DIRECTORY})
+
+  install(TARGETS ${CHPY_MULTICORE}
+          EXPORT ChronoTargets
+          RUNTIME DESTINATION "${CH_INSTALL_PYTHON}/pychrono"
+          LIBRARY DESTINATION "${CH_INSTALL_PYTHON}/pychrono"
+          ARCHIVE DESTINATION "${CH_INSTALL_PYTHON}/pychrono")
+  install(FILES "${CHPY_MULTICORE_PY_FILE}" DESTINATION "${CH_INSTALL_PYTHON}/pychrono")
+
+endif()
+
+#-----------------------------------------------------------------------------
 # Relocate init.py
 #-----------------------------------------------------------------------------
 

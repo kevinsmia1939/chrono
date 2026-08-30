@@ -136,8 +136,8 @@ void ChCollisionSystemMulticore::Add(std::shared_ptr<ChCollisionModel> model) {
                 shape_data.box_like_rigid.push_back(obB);
                 break;
             case ChCollisionShape::Type::CYLSHELL:
-                start = (int)shape_data.box_like_rigid.size();
-                shape_data.box_like_rigid.push_back(obB);
+                start = (int)shape_data.cylshell_rigid.size();
+                shape_data.cylshell_rigid.push_back(real4(obB.x, obB.z, obC.x, obC.y));
                 break;
             case ChCollisionShape::Type::CONE:
                 start = (int)shape_data.box_like_rigid.size();
@@ -499,9 +499,13 @@ void ChCollisionSystemMulticore::GenerateAABB() {
                 ComputeAABBSphere(radius + envelope, local_pos, position, body_rot[id], temp_min, temp_max);
 
             } else if (type == ChCollisionShape::Type::ELLIPSOID || type == ChCollisionShape::Type::BOX ||
-                       type == ChCollisionShape::Type::CYLINDER || type == ChCollisionShape::Type::CYLSHELL ||
-                       type == ChCollisionShape::Type::CONE) {
+                       type == ChCollisionShape::Type::CYLINDER || type == ChCollisionShape::Type::CONE) {
                 real3 B = cd_data->shape_data.box_like_rigid[start];
+                ComputeAABBBox(B + envelope, local_pos, position, rotation, body_rot[id], temp_min, temp_max);
+
+            } else if (type == ChCollisionShape::Type::CYLSHELL) {
+                real4 S = cd_data->shape_data.cylshell_rigid[start];
+                real3 B(S.x, S.x, S.y);
                 ComputeAABBBox(B + envelope, local_pos, position, rotation, body_rot[id], temp_min, temp_max);
 
             } else if (type == ChCollisionShape::Type::ROUNDEDBOX || type == ChCollisionShape::Type::ROUNDEDCYL) {
@@ -800,10 +804,16 @@ void ChCollisionSystemMulticore::VisualizeShapes() {
                 break;
             }
             case ChCollisionShape::Type::CYLINDER:
-            case ChCollisionShape::Type::CYLSHELL: {
+            {
                 const real3& B = cd_data->shape_data.box_like_rigid[start];
                 DrawCylinder(vis_callback.get(), ChCoordsys<>(ToChVector(position), ToChQuaternion(rotation)),
                              double(B.x + envelope), double(B.z + envelope), ChColor(1, 0, 0));
+                break;
+            }
+            case ChCollisionShape::Type::CYLSHELL: {
+                const real4& S = cd_data->shape_data.cylshell_rigid[start];
+                DrawCylinder(vis_callback.get(), ChCoordsys<>(ToChVector(position), ToChQuaternion(rotation)),
+                             double(S.x + envelope), double(S.y + envelope), ChColor(1, 0, 0));
                 break;
             }
             case ChCollisionShape::Type::CAPSULE: {

@@ -141,7 +141,8 @@ void ChCollisionModelMulticore::Populate() {
                 auto ct_shape = chrono_types::make_shared<ctCollisionShape>();
                 ct_shape->A = real3(position.x(), position.y(), position.z());
                 ct_shape->B = real3(radius, radius, height / 2);
-                ct_shape->C = real3(0, 0, 0);
+                ct_shape->C = real3(shape_cylshell->IsBottomClosed() ? 1 : 0,
+                                    shape_cylshell->IsTopClosed() ? 1 : 0, 0);
                 ct_shape->R = quaternion(rotation.e0(), rotation.e1(), rotation.e2(), rotation.e3());
 
                 m_shapes.push_back(shape);

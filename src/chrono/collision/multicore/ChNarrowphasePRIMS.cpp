@@ -16,6 +16,7 @@
 //
 // =============================================================================
 
+#include <algorithm>
 #include <cmath>
 
 #include "chrono/multicore_math/thrust.h"
@@ -186,6 +187,167 @@ bool cylinder_sphere(const real3& pos1,
     }
 
     return true;
+}
+
+// =============================================================================
+//              CYLINDER - CAPPED CYLSHELL
+
+// Analytical primitive collision detection for a solid cylinder contained by a cylindrical shell.
+// The shell side is inward-facing. Optional flat caps face into the shell volume. The cylinder surface is
+// parameterized directly (rather than tessellated into triangles), so candidate pairs remain suitable for the
+// OpenMP-parallel multicore narrow phase. Up to two side contacts and four contacts on an end cap are returned.
+int cylinder_cylshell(const real3& cyl_pos,
+                      const quaternion& cyl_rot,
+                      const real& cyl_radius,
+                      const real& cyl_hlen,
+                      const real3& shell_pos,
+                      const quaternion& shell_rot,
+                      const real& shell_radius,
+                      const real& shell_hlen,
+                      bool closed_bottom,
+                      bool closed_top,
+                      const real& separation,
+                      real3* norm,
+                      real* depth,
+                      real3* pt1,
+                      real3* pt2,
+                      real* eff_radius) {
+    const real3 c = TransformParentToLocal(shell_pos, shell_rot, cyl_pos);
+    const real3 a = RotateT(AMatW(cyl_rot), shell_rot);
+    const real eps = real(1e-10);
+    int ncontacts = 0;
+
+    auto add_contact = [&](const real3& particle_point, const real3& local_normal, real signed_gap, real eradius) {
+        if (ncontacts >= 8 || signed_gap >= separation)
+            return;
+
+        for (int i = 0; i < ncontacts; i++) {
+            real3 old_point = TransformParentToLocal(shell_pos, shell_rot, pt1[i]);
+            if (Length2(old_point - particle_point) < real(1e-12))
+                return;
+        }
+
+        const real3 global_normal = Rotate(local_normal, shell_rot);
+        norm[ncontacts] = global_normal;
+        depth[ncontacts] = signed_gap;
+        pt1[ncontacts] = TransformLocalToParent(shell_pos, shell_rot, particle_point);
+        pt2[ncontacts] = pt1[ncontacts] + signed_gap * global_normal;
+        eff_radius[ncontacts] = eradius;
+        ncontacts++;
+    };
+
+    // Clip generators of the particle's curved surface to the finite shell height. Retaining the deepest point at
+    // both ends gives two stable contacts for a cylinder lying against a wall.
+    const real3 e1 = Normalize(OrthogonalVector(a));
+    const real3 e2 = Cross(a, e1);
+    real best_rho[2] = {real(-1), real(-1)};
+    real3 best_point[2];
+    const real z_extent = cyl_hlen * std::abs(a.z) + cyl_radius * std::sqrt(std::max(real(0), 1 - a.z * a.z));
+
+    if (c.z - z_extent >= -shell_hlen && c.z + z_extent <= shell_hlen) {
+        // Fast path for a particle fully within the shell height. Fixed-point support iteration finds the radial
+        // extremum of each circular end rim without angular tessellation.
+        for (int endpoint = 0; endpoint < 2; endpoint++) {
+            const real t = endpoint == 0 ? -cyl_hlen : +cyl_hlen;
+            const real3 base = c + t * a;
+            real3 horizontal(base.x, base.y, 0);
+            real3 direction = Length2(horizontal) > eps ? Normalize(horizontal) : real3(1, 0, 0);
+            real3 candidate = base;
+            for (int iteration = 0; iteration < 8; iteration++) {
+                const real3 projected = direction - Dot(direction, a) * a;
+                candidate = base + cyl_radius * SafeNormalize(projected, e1);
+                horizontal = real3(candidate.x, candidate.y, 0);
+                direction = Length2(horizontal) > eps ? Normalize(horizontal) : direction;
+            }
+            best_point[endpoint] = candidate;
+            best_rho[endpoint] = std::sqrt(candidate.x * candidate.x + candidate.y * candidate.y);
+        }
+    } else {
+        // Rim-crossing path. Clip sampled surface generators against the finite shell height so particles can enter
+        // through an open end and still collide correctly with the top rim.
+        constexpr int angular_samples = 32;
+        for (int i = 0; i < angular_samples; i++) {
+            const real angle = real(2.0 * CH_PI * i / angular_samples);
+            const real3 radial = std::cos(angle) * e1 + std::sin(angle) * e2;
+            const real3 base = c + cyl_radius * radial;
+            real tmin = -cyl_hlen;
+            real tmax = +cyl_hlen;
+
+            if (std::abs(a.z) > eps) {
+                real tz1 = (-shell_hlen - base.z) / a.z;
+                real tz2 = (+shell_hlen - base.z) / a.z;
+                if (tz1 > tz2)
+                    std::swap(tz1, tz2);
+                tmin = std::max(tmin, tz1);
+                tmax = std::min(tmax, tz2);
+                if (tmin > tmax)
+                    continue;
+            } else if (base.z < -shell_hlen || base.z > shell_hlen) {
+                continue;
+            }
+
+            const real3 candidates[2] = {base + tmin * a, base + tmax * a};
+            for (int endpoint = 0; endpoint < 2; endpoint++) {
+                const real rho = std::sqrt(candidates[endpoint].x * candidates[endpoint].x +
+                                           candidates[endpoint].y * candidates[endpoint].y);
+                if (rho > best_rho[endpoint]) {
+                    best_rho[endpoint] = rho;
+                    best_point[endpoint] = candidates[endpoint];
+                }
+            }
+        }
+    }
+
+    real side_eradius = cyl_radius;
+    if (shell_radius > cyl_radius + eps)
+        side_eradius = cyl_radius * shell_radius / (shell_radius - cyl_radius);
+
+    for (int endpoint = 0; endpoint < 2; endpoint++) {
+        if (best_rho[endpoint] <= eps)
+            continue;
+        const real signed_gap = shell_radius - best_rho[endpoint];
+        const real3 local_normal(best_point[endpoint].x / best_rho[endpoint],
+                                 best_point[endpoint].y / best_rho[endpoint], 0);
+        add_contact(best_point[endpoint], local_normal, signed_gap, side_eradius);
+    }
+
+    // For a parallel cylinder face, use four rim points to resist tipping. For a tilted cylinder, use its exact
+    // support point along the cap normal.
+    auto add_cap_contacts = [&](bool top) {
+        const real3 cap_normal = top ? real3(0, 0, 1) : real3(0, 0, -1);
+        const real ad = Dot(cap_normal, a);
+        const real3 projected = cap_normal - ad * a;
+        const real projected_len = Length(projected);
+        const real axial_sign = ad >= 0 ? real(1) : real(-1);
+
+        if (projected_len > real(1e-6)) {
+            const real3 p = c + axial_sign * cyl_hlen * a + cyl_radius * projected / projected_len;
+            const real rho = std::sqrt(p.x * p.x + p.y * p.y);
+            if (rho <= shell_radius + separation) {
+                const real signed_gap = top ? shell_hlen - p.z : p.z + shell_hlen;
+                add_contact(p, cap_normal, signed_gap, cyl_radius);
+            }
+            return;
+        }
+
+        const real3 face_center = c + axial_sign * cyl_hlen * a;
+        for (int i = 0; i < 4; i++) {
+            const real angle = real(0.5 * CH_PI * i);
+            const real3 p = face_center + cyl_radius * (std::cos(angle) * e1 + std::sin(angle) * e2);
+            const real rho = std::sqrt(p.x * p.x + p.y * p.y);
+            if (rho <= shell_radius + separation) {
+                const real signed_gap = top ? shell_hlen - p.z : p.z + shell_hlen;
+                add_contact(p, cap_normal, signed_gap, cyl_radius);
+            }
+        }
+    };
+
+    if (closed_bottom)
+        add_cap_contacts(false);
+    if (closed_top)
+        add_cap_contacts(true);
+
+    return ncontacts;
 }
 
 // =============================================================================
@@ -1536,6 +1698,26 @@ bool ChNarrowphase::PRIMSCollision(const ConvexBase* shapeA,  // first candidate
         return true;
     }
 
+    if (shapeA->Type() == ChCollisionShape::Type::CYLINDER &&
+        shapeB->Type() == ChCollisionShape::Type::CYLSHELL) {
+        const real4 shell = shapeB->Cylshell();
+        nC = cylinder_cylshell(shapeA->A(), shapeA->R(), shapeA->Box().x, shapeA->Box().z, shapeB->A(), shapeB->R(),
+                              shell.x, shell.y, shell.z > 0, shell.w > 0, separation, ct_norm, ct_depth, ct_pt1,
+                              ct_pt2, ct_eff_rad);
+        return true;
+    }
+
+    if (shapeA->Type() == ChCollisionShape::Type::CYLSHELL &&
+        shapeB->Type() == ChCollisionShape::Type::CYLINDER) {
+        const real4 shell = shapeA->Cylshell();
+        nC = cylinder_cylshell(shapeB->A(), shapeB->R(), shapeB->Box().x, shapeB->Box().z, shapeA->A(), shapeA->R(),
+                              shell.x, shell.y, shell.z > 0, shell.w > 0, separation, ct_norm, ct_depth, ct_pt2,
+                              ct_pt1, ct_eff_rad);
+        for (int i = 0; i < nC; i++)
+            ct_norm[i] = -ct_norm[i];
+        return true;
+    }
+
     if (shapeA->Type() == ChCollisionShape::Type::BOX && shapeB->Type() == ChCollisionShape::Type::CAPSULE) {
         nC = box_capsule(shapeA->A(), shapeA->R(), shapeA->Box(), shapeB->A(), shapeB->R(), shapeB->Capsule().x,
                          shapeB->Capsule().y, separation, ct_norm, ct_depth, ct_pt1, ct_pt2, ct_eff_rad);
@@ -1552,14 +1734,16 @@ bool ChNarrowphase::PRIMSCollision(const ConvexBase* shapeA,  // first candidate
     }
 
     if (shapeA->Type() == ChCollisionShape::Type::BOX && shapeB->Type() == ChCollisionShape::Type::CYLSHELL) {
-        nC = box_cylshell(shapeA->A(), shapeA->R(), shapeA->Box(), shapeB->A(), shapeB->R(), shapeB->Cylshell().x,
-                          shapeB->Cylshell().y, separation, ct_norm, ct_depth, ct_pt1, ct_pt2, ct_eff_rad);
+        const real4 shell = shapeB->Cylshell();
+        nC = box_cylshell(shapeA->A(), shapeA->R(), shapeA->Box(), shapeB->A(), shapeB->R(), shell.x, shell.y,
+                          separation, ct_norm, ct_depth, ct_pt1, ct_pt2, ct_eff_rad);
         return (nC >= 0);
     }
 
     if (shapeA->Type() == ChCollisionShape::Type::CYLSHELL && shapeB->Type() == ChCollisionShape::Type::BOX) {
-        nC = box_cylshell(shapeB->A(), shapeB->R(), shapeB->Box(), shapeA->A(), shapeA->R(), shapeA->Cylshell().x,
-                          shapeA->Cylshell().y, separation, ct_norm, ct_depth, ct_pt2, ct_pt1, ct_eff_rad);
+        const real4 shell = shapeA->Cylshell();
+        nC = box_cylshell(shapeB->A(), shapeB->R(), shapeB->Box(), shapeA->A(), shapeA->R(), shell.x, shell.y,
+                          separation, ct_norm, ct_depth, ct_pt2, ct_pt1, ct_eff_rad);
         for (int i = 0; i < nC; i++) {
             *(ct_norm + i) = -(*(ct_norm + i));
         }

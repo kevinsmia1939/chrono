@@ -29,6 +29,13 @@ class ChApi ChCollisionShapeCylindricalShell : public ChCollisionShape {
   public:
     ChCollisionShapeCylindricalShell();
     ChCollisionShapeCylindricalShell(std::shared_ptr<ChContactMaterial> material, double radius, double height);
+    /// Construct a cylindrical container surface with optional flat end caps.
+    /// The bottom cap is at -height/2 and the top cap at +height/2 in the shape frame.
+    ChCollisionShapeCylindricalShell(std::shared_ptr<ChContactMaterial> material,
+                                     double radius,
+                                     double height,
+                                     bool closed_bottom,
+                                     bool closed_top);
     ChCollisionShapeCylindricalShell(std::shared_ptr<ChContactMaterial> material, const ChCylinder& cyl);
 
     ~ChCollisionShapeCylindricalShell() {}
@@ -42,6 +49,18 @@ class ChApi ChCollisionShapeCylindricalShell : public ChCollisionShape {
     /// Get the cylinder height.
     double GetHeight() const { return gcylinder.GetHeight(); }
 
+    /// Return true if the shell has a flat cap at -height/2.
+    bool IsBottomClosed() const { return closed_bottom; }
+
+    /// Return true if the shell has a flat cap at +height/2.
+    bool IsTopClosed() const { return closed_top; }
+
+    /// Enable or disable the flat cap at -height/2.
+    void SetBottomClosed(bool closed) { closed_bottom = closed; }
+
+    /// Enable or disable the flat cap at +height/2.
+    void SetTopClosed(bool closed) { closed_top = closed; }
+
     /// Get the shape bounding box.
     virtual ChAABB GetBoundingBox() const override { return gcylinder.GetBoundingBox(); }
 
@@ -53,6 +72,8 @@ class ChApi ChCollisionShapeCylindricalShell : public ChCollisionShape {
 
   private:
     ChCylinder gcylinder;
+    bool closed_bottom = false;
+    bool closed_top = false;
 };
 
 /// @} chrono_collision

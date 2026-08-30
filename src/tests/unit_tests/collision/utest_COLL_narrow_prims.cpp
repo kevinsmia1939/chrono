@@ -1522,4 +1522,63 @@ TEST_P(Collision, roundedcyl_sphere) {
     delete shapeC;
 }
 
+TEST(ChNarrowphasePRIMS, cylinder_capped_cylshell) {
+    ConvexShapeCustom cylinder;
+    cylinder.type = ChCollisionShape::Type::CYLINDER;
+    cylinder.dimensions = real3(0.5, 0.5, 0.6);
+    cylinder.rotation = quaternion(1, 0, 0, 0);
+
+    ConvexShapeCustom shell;
+    shell.type = ChCollisionShape::Type::CYLSHELL;
+    shell.position = real3(0, 0, 0);
+    shell.dimensions = real3(2.0, 3.0, 0);
+    shell.rotation = quaternion(1, 0, 0, 0);
+    shell.shell_bottom = 1;
+    shell.shell_top = 0;
+
+    real3 norm[8];
+    real3 pt1[8];
+    real3 pt2[8];
+    real depth[8];
+    real eff_rad[8];
+    int nC;
+
+    // A centered particle is clear of both the inward side and the bottom cap.
+    cylinder.position = real3(0, 0, 0);
+    ASSERT_TRUE(ChNarrowphase::PRIMSCollision(&cylinder, &shell, 0, norm, pt1, pt2, depth, eff_rad, nC));
+    ASSERT_EQ(nC, 0);
+
+    // The inward-facing wall generates two contacts at the cylinder ends.
+    cylinder.position = real3(1.55, 0, 0);
+    ASSERT_TRUE(ChNarrowphase::PRIMSCollision(&cylinder, &shell, 0, norm, pt1, pt2, depth, eff_rad, nC));
+    ASSERT_EQ(nC, 2);
+    CheckValueList(depth, nC, real(-0.05));
+    CheckPointList(norm, nC, real3(1, 0, 0));
+
+    // The closed bottom gives four stable contacts for a parallel flat face.
+    cylinder.position = real3(0, 0, -2.45);
+    ASSERT_TRUE(ChNarrowphase::PRIMSCollision(&cylinder, &shell, 0, norm, pt1, pt2, depth, eff_rad, nC));
+    ASSERT_EQ(nC, 4);
+    CheckValueList(depth, nC, real(-0.05));
+    CheckPointList(norm, nC, real3(0, 0, -1));
+
+    // With the bottom cap disabled, the same particle has no contact.
+    shell.shell_bottom = 0;
+    ASSERT_TRUE(ChNarrowphase::PRIMSCollision(&cylinder, &shell, 0, norm, pt1, pt2, depth, eff_rad, nC));
+    ASSERT_EQ(nC, 0);
+
+    // The open top allows a particle to enter without a false convex-cylinder contact.
+    cylinder.position = real3(0, 0, 3.7);
+    ASSERT_TRUE(ChNarrowphase::PRIMSCollision(&cylinder, &shell, 0, norm, pt1, pt2, depth, eff_rad, nC));
+    ASSERT_EQ(nC, 0);
+
+    // Shape ordering must only reverse normals and contact point ownership.
+    shell.shell_bottom = 1;
+    cylinder.position = real3(1.55, 0, 0);
+    ASSERT_TRUE(ChNarrowphase::PRIMSCollision(&shell, &cylinder, 0, norm, pt1, pt2, depth, eff_rad, nC));
+    ASSERT_EQ(nC, 2);
+    CheckValueList(depth, nC, real(-0.05));
+    CheckPointList(norm, nC, real3(-1, 0, 0));
+}
+
 INSTANTIATE_TEST_SUITE_P(R, Collision, ::testing::Bool());
