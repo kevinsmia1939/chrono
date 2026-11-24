@@ -46,14 +46,18 @@ int main(int argc, char* argv[]) {
     std::cout << "  3. Baffle flow (SPH)" << std::endl;
     std::cout << "  4. Dam break (SPH)" << std::endl;
     std::cout << "  5. Wave tank (SPH)" << std::endl;
-    std::cout << "  6. Sphere decay (TDPF)" << std::endl;
-    std::cout << "  7. Other (user-provided YAML file)" << std::endl;
+    std::cout << "  6. Flexible cable in granular flow (SPH, CRM)" << std::endl;
+    std::cout << "  7. Flexible cable in water flow (SPH, CFD)" << std::endl;
+    std::cout << "  8. Sphere regular waves (TDPF)" << std::endl;
+    std::cout << "  9. Sphere decay (TDPF)" << std::endl;
+    std::cout << " 10. Flexible cable in a shaking tank (SPH, CFD)" << std::endl;
+    std::cout << " 11. Other (user-provided FSI YAML file)" << std::endl;
     std::cout << "\nSelect model: ";
     std::getline(std::cin, input);
     if (!input.empty()) {
         std::istringstream stream(input);
         stream >> model;
-        ChClampValue(model, 1, 5);
+        ChClampValue(model, 1, 11);
     }
 
     // Set input file name
@@ -75,9 +79,21 @@ int main(int argc, char* argv[]) {
             yaml_filename = GetChronoDataFile("yaml/fsi/wave_tank/fsi_wave_tank.yaml");
             break;
         case 6:
-            yaml_filename = GetChronoDataFile("yaml/fsi/sphere_decay/fsi_sphere_decay.yaml");
+            yaml_filename = GetChronoDataFile("yaml/fsi/flexible_cable/fsi_flexible_cable_crm.yaml");
             break;
         case 7:
+            yaml_filename = GetChronoDataFile("yaml/fsi/flexible_cable/fsi_flexible_cable_cfd.yaml");
+            break;
+        case 8:
+            yaml_filename = GetChronoDataFile("yaml/fsi/sphere_regular_waves/fsi_sphere_regular_waves.yaml");
+            break;
+        case 9:
+            yaml_filename = GetChronoDataFile("yaml/fsi/sphere_decay/fsi_sphere_decay.yaml");
+            break;
+        case 10:
+            yaml_filename = GetChronoDataFile("yaml/fsi/flexible_cable_shaking_tank/fsi_flexible_cable_shaking_tank.yaml");
+            break;
+        case 11:
             std::cout << "FSI YAML specification file name: ";
             std::getline(std::cin, yaml_filename);
             break;
@@ -136,8 +152,9 @@ int main(int argc, char* argv[]) {
     render = false;
 #endif
 
-    // Create output directory
-    if (output) {
+    // Create output directory (if generating output or saving run-time visualization images)
+    bool save_images = render && parser.WriteImages();
+    if (output || save_images) {
         std::string out_dir = GetChronoOutputPath() + "YAML_FSI";
         if (!CreateOutputDirectory(std::filesystem::path(out_dir))) {
             std::cout << "Error creating directory " << out_dir << std::endl;

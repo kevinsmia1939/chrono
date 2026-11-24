@@ -30,7 +30,7 @@ class ChApi ChColormap {
   public:
     /// Colormap type.
     /// Data obtained from https://www.kennethmoreland.com/color-advice/
-    enum class Type { BLACK_BODY, BLUE, BROWN, COPPER, FAST, INFERNO, JET, KINDLMANN, PLASMA, RED_BLUE, VIRIDIS };
+    enum class Type { BLACK_BODY, BLUE, BROWN, COPPER, FAST, INFERNO, JET, KINDLMANN, PLASMA, RED_BLUE, REGOLITH, VIRIDIS };
 
     /// Names of colormap definition files.
     struct Files {
@@ -42,11 +42,12 @@ class ChApi ChColormap {
     ChColormap(Type type);
 
     /// Load data for the specified colormap, replacing current data.
+    /// The data file is located in the Chrono data directory. If it cannot be opened, the current data is kept.
     void Load(Type type);
 
     /// Return a color corresponding to the provided value, assumed in [0,1].
     /// The output color is obtained by linear interpolation in the current colormap table.
-    /// Out of range input values are clamped to [0,1].
+    /// Out of range input values are clamped to [0,1]. If no colormap data was loaded, a uniform gray is returned.
     ChColor Get(double value) const;
 
     /// Return a color corresponding to the provided value, assumed in [vmin,vmax].

@@ -91,6 +91,11 @@ class ChApi ChAssembly : public ChPhysicsItem {
     /// effectively add them and clean the batch. Called automatically at each Setup().
     void FlushBatch();
 
+    // Removal functions.
+    // If this assembly belongs to a system, the collision models of the removed items are also removed from the
+    // collision system of that system and, if an item that can be in contact is removed, all contacts currently in its
+    // contact container are discarded (they are recreated by the next collision detection).
+
     /// Remove a body from this assembly.
     void RemoveBody(std::shared_ptr<ChBody> body);
     /// Remove a shaft from this assembly.
@@ -320,10 +325,51 @@ class ChApi ChAssembly : public ChPhysicsItem {
         std::vector<std::shared_ptr<ChLoadCustom>> loads;
         std::vector<std::shared_ptr<ChLinkMotorLinear>> lin_motors;
         std::vector<std::shared_ptr<ChLinkMotorRotation>> rot_motors;
+
+        /// Other physics items, checkpointed generically (coordinates, accelerations, reactions and internal state).
+        std::vector<std::shared_ptr<ChPhysicsItem>> items;
+
+#ifdef CHRONO_FEA
+        /// FEA meshes, checkpointed as a whole (node coordinates and internal state of nodes and elements).
+        std::vector<std::shared_ptr<fea::ChMesh>> meshes;
+
+        /// Selection of nodes of an FEA mesh (used for output only).
+        struct MeshNodes {
+            std::shared_ptr<fea::ChMesh> mesh;                       ///< FEA mesh
+            std::vector<std::shared_ptr<fea::ChNodeFEAbase>> nodes;  ///< selected mesh nodes
+            std::vector<unsigned int> node_ids;                      ///< identifiers of the selected nodes
+        };
+
+        std::vector<MeshNodes> mesh_nodes;
+#endif
     };
 
+    /// Mark this assembly and all its items as not initialized.
+    virtual void ResetInitialization() override;
+
+    /// Return true if all items in this assembly support checkpointing of their internal state.
+    virtual bool SupportsCheckpoint() const override;
+
+    /// Save the internal state of all items in this assembly.
+    virtual void SaveInternalState(ChCheckpointWriter& writer) const override;
+
+    /// Load the internal state of all items in this assembly.
+    virtual void LoadInternalState(ChCheckpointReader& reader) override;
+
   protected:
-    virtual void SetupInitial() override;
+    /// Run the specified initialization phase on all items in this assembly.
+    virtual void InitializeChildren(InitPhase phase) override;
+
+    /// Collect pointers to all items in this assembly (bodies, shafts, links, meshes, other items, in this order).
+    virtual void CollectItems(std::vector<ChPhysicsItem*>& items) const;
+
+    /// Remove the collision models of an item being removed from this assembly from the collision system of the
+    /// system this assembly belongs to (if any).
+    void RemoveCollisionModels(const ChPhysicsItem& item) const;
+
+    /// Discard the contacts in the system this assembly belongs to (if any), since they may involve an item being
+    /// removed.
+    void RemoveContacts() const;
 
     std::vector<std::shared_ptr<ChBody>> bodylist;      ///< list of rigid bodies
     std::vector<std::shared_ptr<ChShaft>> shaftlist;    ///< list of 1-D shafts

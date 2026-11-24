@@ -28,7 +28,7 @@ using std::endl;
 namespace chrono {
 namespace parsers {
 
-ChParserYAML::ChParserYAML() : m_name("model"), m_verbose(false), m_use_degrees(true), m_output_dir(".") {
+ChParserYAML::ChParserYAML() : m_name("model"), m_verbose(false), m_use_degrees(true), m_output_dir("."), m_frame_acc_dir(VECT_X), m_frame_acc(nullptr) {
     m_vis_settings.image_dir = "./images";
 }
 
@@ -57,7 +57,15 @@ ChParserYAML::YamlFileType ChParserYAML::ReadYamlFileType(const YAML::Node& a) {
         return YamlFileType::FSI;
     if (type == "VEHICLE")
         return YamlFileType::VEHICLE;
-    return YamlFileType::UNKNOWN;
+    if (type == "WHEEL_RIG")
+        return YamlFileType::WHEEL_RIG;
+    if (type == "CUSTOM")
+        return YamlFileType::CUSTOM;
+
+    // Report an unrecognized value rather than letting it pass as a deliberate CUSTOM declaration:
+    // a misspelled type would otherwise be indistinguishable from a file meant for application code.
+    cerr << "Warning: unrecognized YAML file type '" << a.as<std::string>() << "'; treating it as CUSTOM." << endl;
+    return YamlFileType::CUSTOM;
 }
 
 // -----------------------------------------------------------------------------
@@ -70,6 +78,22 @@ void ChParserYAML::LoadSimData(const YAML::Node& yaml) {
     // Run-time visualization (optional)
     if (yaml["visualization"])
         m_vis_settings = ChVisualSystem::Settings::Read(yaml["visualization"]);
+}
+
+void ChParserYAML::ReadFrameAcceleration(const YAML::Node& sim) {
+    if (!sim["frame_acceleration"])
+        return;
+
+    auto a = sim["frame_acceleration"];
+    ChAssertAlways(a["direction"]);
+    ChAssertAlways(a["function"]);
+    m_frame_acc_dir = ReadVector(a["direction"]);
+    ChAssertAlways(m_frame_acc_dir.Length() > 0);
+    m_frame_acc_dir.Normalize();
+    m_frame_acc = ReadFunction(a["function"], true);
+
+    if (m_verbose)
+        std::cout << "frame acceleration direction: " << m_frame_acc_dir << std::endl;
 }
 
 // -----------------------------------------------------------------------------
@@ -86,7 +110,9 @@ void ChParserYAML::SetOutputDir(const std::string& out_dir) {
         }
     }
 
-    if (m_vis_settings.write_images) {
+    bool save_images = VisualizationEnabled() && m_vis_settings.write_images;
+
+    if (save_images) {
         bool success = CreateOutputDirectory(std::filesystem::path(m_vis_settings.image_dir));
         if (!success) {
             std::cerr << "Error creating image output directory " << m_vis_settings.image_dir << std::endl;
@@ -95,25 +121,32 @@ void ChParserYAML::SetOutputDir(const std::string& out_dir) {
     }
 
     if (m_verbose) {
-        if (m_output_settings.format != ChOutput::Format::NONE) {
-            auto filename = m_output_dir + "/" + m_name + "." + ChOutput::GetModeAsString(m_output_settings.mode);
-            switch (m_output_settings.format) {
-                case ChOutput::Format::ASCII:
-                    cout << "Output file: " << filename << ".txt" << endl;
-                    break;
-                case ChOutput::Format::HDF5:
-#ifdef CHRONO_HAS_HDF5
-                    cout << "Output file: " << filename << ".h5" << endl;
-                    break;
-#else
-                    cerr << "HDF5 not available. No output file will be generated" << endl;
-#endif
-            }
-        }
+        if (m_output_settings.format != ChOutput::Format::NONE)
+            PrintOutputFileInfo();
 
-        if (m_vis_settings.write_images) {
+        if (save_images) {
             cout << "Image directory: " << m_vis_settings.image_dir << endl;
         }
+    }
+}
+
+void ChParserYAML::PrintOutputFileInfo() const {
+    PrintOutputFileName("Output file: ", m_name);
+}
+
+void ChParserYAML::PrintOutputFileName(const std::string& label, const std::string& file_stem) const {
+    auto filename = m_output_dir + "/" + file_stem + "." + ChOutput::GetModeAsString(m_output_settings.mode);
+    switch (m_output_settings.format) {
+        case ChOutput::Format::ASCII:
+            cout << label << filename << ".txt" << endl;
+            break;
+        case ChOutput::Format::HDF5:
+#ifdef CHRONO_HAS_HDF5
+            cout << label << filename << ".h5" << endl;
+            break;
+#else
+            cerr << "HDF5 not available. No output file will be generated" << endl;
+#endif
     }
 }
 

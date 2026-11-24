@@ -97,7 +97,7 @@ mbs:
 fluid:
   description: |
       YAML file for fluid simulation specification.
-      The path to the sluid file must be provided relative to the location of this simulation specification file.
+      The path to the fluid file must be provided relative to the location of this simulation specification file.
       The fluid file must follow the fsisph_simulation.schema or the fsitdpf_simulation.schema.
   type: string
     
@@ -127,7 +127,7 @@ fsi:
             default: ABSOLUTE
         root:
             type: string
-            description: Root of data files, relatiuve to location of this script
+            description: Root of data files, relative to the location of this script
             default: "."
 
     fsi_bodies:
@@ -146,6 +146,48 @@ fsi:
             items:
               <<: *SHAPE
 
+    node_directions:
+      description: |
+        Method for obtaining FEA node directions, used to place BCE markers on FSI FEA meshes.
+        NONE: node directions are not used (piece-wise linear interpolation between nodes);
+        AVERAGE: directions are approximated by averaging over the elements incident to a node;
+        EXACT: directions are obtained from the FEA mesh.
+        Used only with an SPH fluid system.
+      type: string
+      enum: [NONE, AVERAGE, EXACT]
+      default: NONE
+
+    fsi_meshes:
+      description: |
+        FSI FEA meshes (flexible solids interacting with the fluid). Requires the Chrono::FEA module.
+        FSI FEA meshes are supported only with an SPH fluid system.
+      type: array
+      items:
+        type: object
+        required: [name]
+        properties:
+          name:
+            description: Name of the FEA mesh in the multibody system (e.g., the name of a beam)
+            type: string
+          bce_pattern_1D:
+            description: BCE marker pattern in the cross section of 1-D elements (e.g., cables and beams)
+            type: string
+            enum: [FULL, STAR]
+            default: FULL
+          bce_pattern_2D:
+            description: BCE marker pattern along the normal of 2-D surfaces (e.g., shells and volume boundaries)
+            type: string
+            enum: [CENTERED, OUTWARD, INWARD]
+            default: CENTERED
+          remove_center:
+            description: Whether to eliminate the BCE markers on the center line (1-D) or on the surface (2-D)
+            type: boolean
+            default: false
+          check_embedded:
+            description: Whether to remove SPH particles initially overlapping the mesh BCE markers
+            type: boolean
+            default: true
+
 simulation:
   description: Definition of co-simulation metastep and simulation duration
   type: object
@@ -156,24 +198,63 @@ simulation:
       type: number
       minimum: 0
     end_time:
-      description: Simulation duration
+      description: |
+        Simulation duration in seconds.
+        The simulation will run from t=0 to t=end_time. A negative value indicates an infinite end time.
       type: number
-      minimum: 0
+      default: -1
     gravity:
       type: array
       <<: *VECTOR3D
       description: Gravitational acceleration vector [x, y, z]
       default: [0, 0, -9.8]
+    frame_acceleration:
+      type: object
+      description: |
+        Prescribed acceleration a(t) = function(t) * direction of the reference frame in which the problem is
+        simulated (a translating, non-inertial frame, e.g., a shaking tank). At each step, the effective gravity
+        g - a(t) is used instead of the gravitational acceleration g. Applied to both the multibody and the fluid systems (Chrono::FSI-SPH only).
+      required: [direction, function]
+      properties:
+        direction:
+          type: array
+          <<: *VECTOR3D
+          description: Direction of the frame acceleration (normalized when read)
+        function:
+          type: object
+          description: |
+            Magnitude of the frame acceleration, as a function of time. Specified like any other Chrono YAML function
+            (e.g., the actuation function of a motor in an MBS model); angles (e.g., a sine phase) are in degrees.
+
+output:
+  description: Output settings
+  type: object
+  required: [format]
+  properties:
+     format:
+        type: string
+        description: Output DB format
+        enum: [NONE, ASCII, HDF5]
+        default: NONE
+     mode:
+        type: string
+        description: Output mode (one file per output frame, or a single time-series file)
+        enum: [FRAMES, SERIES]
+        default: FRAMES
+     fps:
+        type: number
+        description: Output frequency (FPS or Hz)
+        minimum: 0
+        default: 100
 
 visualization:
-  description: Visualization settings
+  description: |
+    Run-time visualization settings.
+    The mere presence of this object enables run-time visualization for the coupled FSI problem.
+    Note that body visualization shapes are controlled by the referenced MBS simulation file, and fluid-phase
+    rendering by the referenced fluid simulation file; there is no `type` entry at this level.
   type: object
   properties:
-      type:
-          type: string
-          description: Visualization type.
-          enum: [MODEL_FILE, PRIMITIVES, COLLISION, NONE]
-          default: MODEL_FILE
       render_fps:
           type: number
           description: Target frames per second for visualization
@@ -199,6 +280,18 @@ visualization:
                   <<: *VECTOR3D
                   description: Initial camera look-at point
                   default: [0, 0, 0]
+      output:
+          type: object
+          description: Run-time visualization image output
+          properties:
+              save_images:
+                  type: boolean
+                  description: Whether to save rendered frames as image files
+                  default: false
+              image_type:
+                  type: string
+                  description: Image file type, specified through the file extension
+                  default: bmp
 
 
   

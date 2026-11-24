@@ -126,7 +126,7 @@ int main(int argc, char* argv[]) {
     sph_params.shifting_xsph_eps = 0.25;
     sph_params.shifting_ppst_pull = 1.0;
     sph_params.shifting_ppst_push = 3.0;
-    sph_params.free_surface_threshold = 2.0;
+    sph_params.free_surface_threshold = 2.4;
     sph_params.artificial_viscosity = 0.5;
     sph_params.num_proximity_search_steps = 1;
     sph_params.boundary_method = BoundaryMethod::ADAMI;
@@ -349,7 +349,7 @@ std::shared_ptr<ChMesh> CreateANCF3243Beam(ChSystem& sysMBS, double x, int n) {
     double density = 1000;
     const double k1 = 10 * (1 + nu) / (12 + 11 * nu);
     const double k2 = k1;  // k1, k2: Timoshenko shear correection coefficients
-    auto material = chrono_types::make_shared<ChMaterialBeamANCF>(density, E, nu, E * nu, k1, k2);
+    auto material = chrono_types::make_shared<ChMaterialBeamANCF>(density, ChVector3d(E), ChVector3d(nu), ChVector3d(E * nu), k1, k2);
 
     double length = beam_length / n;
 
@@ -401,7 +401,7 @@ std::shared_ptr<ChMesh> CreateANCF3333Beam(ChSystem& sysMBS, double x, int n) {
     double density = 1000;
     const double k1 = 10 * (1 + nu) / (12 + 11 * nu);
     const double k2 = k1;  // k1, k2: Timoshenko shear correection coefficients
-    auto material = chrono_types::make_shared<ChMaterialBeamANCF>(density, E, nu, E * nu, k1, k2);
+    auto material = chrono_types::make_shared<ChMaterialBeamANCF>(density, ChVector3d(E), ChVector3d(nu), ChVector3d(E * nu), k1, k2);
 
     double length = beam_length / n;
 

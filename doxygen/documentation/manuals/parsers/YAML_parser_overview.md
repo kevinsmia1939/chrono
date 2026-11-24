@@ -5,17 +5,46 @@ Overview of the YAML parser for Chrono models and simulations {#YAML_parser_over
 
 The Chrono YAML parsers allow running Chrono simulations fully specified through YAML files without the need for writing and building user code.
 To this end, a complete Chrono simulation via YAML files requires specification of both Chrono models and Chrono solvers.
-Currently, the Chrono YAML parsers support rigid multibody, vehicle, and FSI simulations.  For any type of Chrono simulation, the user is expected to provide:
+Currently, the Chrono YAML parsers support rigid multibody, vehicle, single-wheel test rig, and FSI simulations.  For any type of Chrono simulation, the user is expected to provide:
 1. a top-level YAML *simulation* file which specifies the model to be simulated and the solvers used for the simulation, as well as optional output and run-time visualization settings,
 2. a YAML *model* file with a description of the respective Chrono model (MBS, vehicle, or FSI), and
 3. a YAML *solver* file with a description of the solver type and parameters appropriate for the desired type of simulation.
 
 These 3 YAML files provide the top of a hierarchy of YAML specification files that fully describe the desired Chrono simulation.
 Note that FSI problems, which couple MBS and fluid simulations have a deeper hierarchy of YAML specification files, as the top-level FSI *simulation* file refers to an MBS *simulation* file and a fluid *simulation* file.
+Similarly, a single-wheel test rig *simulation* file refers to a rig *model* file (which in turn refers to an MBS *solver* file) and a *terrain* file. For CRM terrain, the terrain file is an SPH *simulation* file, which refers to an SPH *model* file and an SPH *solver* file, exactly as in an FSI problem.
 
 The various types of Chrono simulations that can be conducted through YAML files and the corresponding required YAML files are shown in the schematic below.
 
 <img src="http://www.projectchrono.org/assets/manual/YAML_schemas.png" width="600">
+
+
+## Specification file types
+
+Every YAML specification file declares its kind through a required `type` key, which the parsers use both
+to dispatch to the right parser and to verify that a file is being read as the kind it claims to be. The
+recognized values are:
+
+| `type` | Meaning |
+|--------|---------|
+| `MBS` | Rigid multibody simulation, see the [MBS simulation schema](@ref YAML_schema_mbs_simulation) |
+| `VEHICLE` | Vehicle simulation, see the [vehicle simulation schema](@ref YAML_schema_vehicle_simulation) |
+| `WHEEL_RIG` | Single-wheel test rig simulation, see the [wheel test rig simulation schema](@ref YAML_schema_wheel_rig_simulation) |
+| `FSI` | Coupled fluid-solid interaction simulation, see the [FSI simulation schema](@ref YAML_schema_fsi_simulation) |
+| `SPH` | Chrono::FSI-SPH fluid phase, see the [FSI-SPH simulation schema](@ref YAML_schema_fsisph_simulation) |
+| `TDPF` | Chrono::FSI-TDPF fluid phase, see the [FSI-TDPF simulation schema](@ref YAML_schema_fsitdpf_simulation) |
+| `CUSTOM` | A file that is not consumed by any Chrono YAML parser, but read by application code |
+
+Values are matched case-insensitively.
+
+`CUSTOM` exists for files that follow the YAML conventions but are interpreted by user code rather than by
+one of the parsers above. The participant configuration of a preCICE adapter implemented in a user program
+is an example: it carries a `precice_adapter_config` object that the adapter base class reads directly, and
+neither `chrono-version` nor `type` is consumed. Declaring `type: CUSTOM` documents that intent rather than
+leaving the reader to infer it from the absence of a recognized type.
+
+An unrecognized `type` value is not an error. It is reported as `CUSTOM` together with a warning naming the
+offending value, so that a misspelling does not silently masquerade as a deliberate `CUSTOM` declaration.
 
 
 ## Reference frames {#YAML_parser_frames}
@@ -57,8 +86,11 @@ The Chrono distribution includes (in the `data\yaml\` directory) several YAML sp
 - Vehicle simulation (defaults to a wheeled vehicle model):<br>
   `./run_chrono -s ../data/yaml/vehicle/vehicle.yaml`<br>
   (modify the mbs.yaml file to point to a different vehicle model)
+- Single-wheel test rig simulation (a wheel with a steerable suspension on rigid terrain):<br>
+  `./run_chrono -s ../data/yaml/vehicle/wheel_rig/wheel_suspension_rig_rigid.yaml`<br>
+  (use a different wheel test rig specification file for other wheel assemblies and terrain types)
 - FSI-SPH problem (defaults to a CFD simulation of a cylinder dropped in water):<br>
-  `./run_chrono -s ../data/yaml/fsi/objectdrop/fsi_objectdrop.yaml`<br>
+  `./run_chrono -s ../data/yaml/fsi/cylinder_drop/fsi_cylinder_drop.yaml`<br>
   (use a different FSI specification file for other examples)
 - FSI-TDPF problem <br>
   `./run_chrono -s ../data/yaml/fsi/sphere_decay/fsi_sphere_decay.yaml`

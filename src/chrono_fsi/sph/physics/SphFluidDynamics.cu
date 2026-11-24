@@ -33,6 +33,16 @@ namespace chrono {
 namespace fsi {
 namespace sph {
 
+// Reduction operators.
+// Defined locally rather than using thrust::minimum / thrust::plus /
+// thrust::equal_to: those are deprecated in CCCL 3.1 (CUDA 13.x) in favor of
+// cuda::minimum / cuda::std::plus / cuda::std::equal_to, which are libcu++ and
+// therefore unavailable under rocThrust (the Thrust device system used on AMD).
+
+struct real_min {
+    __host__ __device__ Real operator()(const Real& a, const Real& b) const { return a < b ? a : b; }
+};
+
 void CopyParametersToDevice_SphFluidDynamics(std::shared_ptr<ChFsiParamsSPH> paramsH, std::shared_ptr<Counters> countersH) {
     gpuMemcpyToSymbolAsync(paramsD, paramsH.get(), sizeof(ChFsiParamsSPH));
     gpuCheckError();
@@ -93,10 +103,10 @@ double SphFluidDynamics::computeTimeStep() const {
     size_t valid_entries = m_data_mgr.countersH->numExtendedParticles;
     double min_courant_viscous_time_step =
         static_cast<double>(thrust::reduce(thrust::device, m_data_mgr.courantViscousTimeStepD.begin(), m_data_mgr.courantViscousTimeStepD.begin() + valid_entries,
-                                           std::numeric_limits<Real>::max(), thrust::minimum<Real>()));
+                                           std::numeric_limits<Real>::max(), real_min()));
     double min_acceleration_time_step =
         static_cast<double>(thrust::reduce(thrust::device, m_data_mgr.accelerationTimeStepD.begin(), m_data_mgr.accelerationTimeStepD.begin() + valid_entries,
-                                           std::numeric_limits<Real>::max(), thrust::minimum<Real>()));
+                                           std::numeric_limits<Real>::max(), real_min()));
 
     double adjusted_time_step = 0.3 * std::min(min_courant_viscous_time_step, min_acceleration_time_step);
     // Log the time step values for analysis
@@ -707,7 +717,7 @@ __global__ void MidpointStep_D(Real4* posRadD,
 
 template <typename T>
 struct check_infinite {
-    __host__ __device__ bool operator()(const T& v) { return !IsFinite(v); }
+    __host__ __device__ bool operator()(const T& v) const { return !IsFinite(v); }
 };
 
 void SphFluidDynamics::EulerStep(std::shared_ptr<SphMarkerDataD> sortedMarkers, Real dT) {
@@ -766,7 +776,7 @@ void SphFluidDynamics::MidpointStep(std::shared_ptr<SphMarkerDataD> sortedMarker
 // -----------------------------------------------------------------------------
 
 // Kernel to copy sorted data back to original order (ISPH)
-__global__ void CopySortedToOriginalISPH_D(MarkerGroup group,
+__global__ void CopySortedToOriginalISPH_D(MarkerGroupImpl group,
                                            const Real4* sortedPosRad,
                                            const Real3* sortedVelMas,
                                            const Real4* sortedRhoPresMu,
@@ -802,7 +812,7 @@ __global__ void CopySortedToOriginalISPH_D(MarkerGroup group,
 }
 
 // Kernel to copy sorted data back to original order (WCSPH)
-__global__ void CopySortedToOriginalWCSPH_D(MarkerGroup group,
+__global__ void CopySortedToOriginalWCSPH_D(MarkerGroupImpl group,
                                             const Real4* sortedPosRad,
                                             const Real3* sortedVelMas,
                                             const Real4* sortedRhoPresMu,
@@ -837,7 +847,7 @@ __global__ void CopySortedToOriginalWCSPH_D(MarkerGroup group,
     pcEvSvOriginal[index] = sortedPcEvSv[id];
 }
 
-void SphFluidDynamics::CopySortedToOriginal(MarkerGroup group, std::shared_ptr<SphMarkerDataD> sortedSphMarkersD, std::shared_ptr<SphMarkerDataD> sphMarkersD) {
+void SphFluidDynamics::CopySortedToOriginal(MarkerGroupImpl group, std::shared_ptr<SphMarkerDataD> sortedSphMarkersD, std::shared_ptr<SphMarkerDataD> sphMarkersD) {
     uint numActive = (uint)m_data_mgr.countersH->numExtendedParticles;
     uint numBlocks, numThreads;
     computeGridSize(numActive, 1024, numBlocks, numThreads);

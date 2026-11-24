@@ -12,6 +12,9 @@
 # Schema for a Chrono::FSI-SPH YAML fluid simulation specification file.
 # The `chrono-version` must match the Chrono major and minor version numbers.
 #
+# An SPH simulation file (with CRM physics) also specifies the CRM terrain of a single-wheel test rig simulation
+# (see wheel_rig_simulation.schema). In that case, only its model, solver, and visualization settings are used.
+#
 # =============================================================================
 
 required: [chrono-version, type, model, solver]
@@ -60,28 +63,51 @@ simulation:
       type: number
       description: |
         Total simulation duration in seconds.
-        The simulation will run from t=0 to t=end_time. A negative value indicates na infinite end time.
-      minimum: 0
+        The simulation will run from t=0 to t=end_time. A negative value indicates an infinite end time.
       default: -1
     gravity:
       type: array
       <<: *VECTOR3D
       description: Gravitational acceleration vector [x, y, z]
       default: [0, 0, -9.8]
+    frame_acceleration:
+      type: object
+      description: |
+        Prescribed acceleration a(t) = function(t) * direction of the reference frame in which the problem is
+        simulated (a translating, non-inertial frame, e.g., a shaking tank). At each step, the effective gravity
+        g - a(t) is used instead of the gravitational acceleration g. Applied in preCICE co-simulations (SPH participant).
+      required: [direction, function]
+      properties:
+        direction:
+          type: array
+          <<: *VECTOR3D
+          description: Direction of the frame acceleration (normalized when read)
+        function:
+          type: object
+          description: |
+            Magnitude of the frame acceleration, as a function of time. Specified like any other Chrono YAML function
+            (e.g., the actuation function of a motor in an MBS model); angles (e.g., a sine phase) are in degrees.
 
 output:
   description: Output settings
   type: object
+  required: [format]
   properties:
      format:
         type: string
         description: Output DB format
         enum: [NONE, ASCII, HDF5]
         default: NONE
+     mode:
+        type: string
+        description: Output mode (one file per output frame, or a single time-series file)
+        enum: [FRAMES, SERIES]
+        default: FRAMES
      fps:
         type: number
-        description: Output frequency
+        description: Output frequency (FPS or Hz)
         minimum: 0
+        default: 100
 
 visualization:
   description: SPH-specific run-time visualization settings
@@ -103,5 +129,95 @@ visualization:
       type: boolean
       description: Render BCE markers on flexible solids
       default: true
-    # TODO
+    active_boxes:
+      type: boolean
+      description: Render the active domain boxes associated with FSI solids
+      default: false
+
+    color_map:
+      description: Colormap-based coloring of SPH particles
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          description: Particle quantity used for coloring
+          enum: [NONE, HEIGHT, VELOCITY, DENSITY, PRESSURE]
+          default: NONE
+        map:
+          type: string
+          description: Colormap
+          enum: [BLACK_BODY, BLUE, BROWN, COPPER, FAST, INFERNO, JET, KINDLMANN, PLASMA, RED_BLUE]
+          default: JET
+        min:
+          type: number
+          description: Lower end of the color data range (required unless type is NONE)
+        max:
+          type: number
+          description: Upper end of the color data range (required unless type is NONE)
+        up:
+          <<: *VECTOR3D
+          description: Direction along which height is measured (HEIGHT type only)
+          default: [0, 0, 1]
+        bimodal:
+          type: boolean
+          description: Use a bimodal (two-sided) color scale (required for PRESSURE type)
+
+    visibility:
+      description: |
+        Marker visibility control through a set of planes (e.g., to cut away part of the domain).
+        A marker is "in front of" a plane if it lies on the side the plane normal points to.
+        With mode ALL, a marker is hidden if it is in front of all planes; with mode ANY, a marker
+        is hidden if it is in front of at least one plane.
+        The criterion can be applied to SPH particles and to boundary (wall) BCE markers; rigid-body
+        and flexible-body BCE markers are not affected.
+      type: object
+      required: [planes]
+      properties:
+        planes:
+          description: List of planes; markers in front of a plane (on the side of its normal) are candidates for hiding
+          type: array
+          items:
+            type: object
+            required: [point, normal]
+            properties:
+              point:
+                <<: *VECTOR3D
+                description: A point on the plane
+              normal:
+                <<: *VECTOR3D
+                description: Plane normal direction (points toward the side whose markers are hidden)
+        mode:
+          type: string
+          description: |
+            Hide a marker if it is in front of all planes (ALL) or in front of at least one plane (ANY)
+          enum: [ALL, ANY]
+          default: ALL
+        SPH:
+          type: boolean
+          description: Apply the visibility criterion to SPH particles
+          default: true
+        BCE:
+          type: boolean
+          description: Apply the visibility criterion to boundary (wall) BCE markers
+          default: true
+
+    splashsurf:
+      description: |
+        Fluid surface reconstruction (splashsurf).
+        The mere presence of this object enables surface reconstruction.
+      type: object
+      properties:
+        smoothing_length:
+          type: number
+          description: Smoothing length for the SPH kernel, in multiples of the particle radius
+          default: 1.5
+        cube_size:
+          type: number
+          description: Marching-cubes edge length, in multiples of the particle radius
+          default: 0.5
+        surface_threshold:
+          type: number
+          description: Iso-surface density threshold, in multiples of the rest density
+          default: 0.6
 

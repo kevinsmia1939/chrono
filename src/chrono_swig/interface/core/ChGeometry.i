@@ -62,6 +62,11 @@ using namespace chrono;
 %shared_ptr(chrono::ChLineBezier)
 %shared_ptr(chrono::ChLineBSpline)
 %shared_ptr(chrono::ChLineCam)
+%shared_ptr(chrono::ChLineCamTranslatingInline)
+%shared_ptr(chrono::ChLineCamTranslatingOffset)
+%shared_ptr(chrono::ChLineCamTranslatingFlat)
+%shared_ptr(chrono::ChLineCamOscillatingRoller)
+%shared_ptr(chrono::ChLineCamOscillatingFlat)
 %shared_ptr(chrono::ChTriangle)
 %shared_ptr(chrono::ChTriangleMesh)
 %shared_ptr(chrono::ChTriangleMeshSoup)
@@ -78,8 +83,12 @@ using namespace chrono;
 
 
 /* Parse the header file(s) to generate wrappers */
-%include "../../../chrono/geometry/ChGeometry.h"
+// ChAABB.h must be parsed before ChGeometry.h: ChGeometry::GetBoundingBox() returns a ChAABB, and a
+// type SWIG has not seen yet becomes an opaque SWIGTYPE_p_ placeholder. The base and derived
+// declarations would then disagree, losing the override (C# CS0114) and leaving the base method
+// unusable from the bindings.
 %include "../../../chrono/geometry/ChAABB.h"
+%include "../../../chrono/geometry/ChGeometry.h"
 %include "../../../chrono/geometry/ChLine.h"
 %include "../../../chrono/geometry/ChVolume.h"
 %include "../../../chrono/geometry/ChSurface.h"

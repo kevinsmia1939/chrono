@@ -251,13 +251,34 @@ class ChApi ChSystem : public ChIntegrableIIorder {
     /// The assembling is performed by satisfying constraints at position, velocity, and acceleration levels.
     /// Position-level assembling requires Newton-Raphson iterations.
     /// Velocity-level assembling is performed by taking a small integration step.
-    /// Acceleration-level assembling is obtained through finite differentiation.
+    /// Acceleration-level assembling is performed by a second such step (see ChAssemblyAnalysis).
     /// Argument 'action' can be one of AssemblyLevel enum values (POSITION, VELOCITY, ACCELERATION, or FULL).
     /// These values can also be combined using bit operations.
-    /// Returns true if the assembling converged, false otherwise (impossible assembly?)
+    /// Returns NOT_CONVERGED if the assembly failed (impossible assembly?) and ACCELERATION_INACCURATE if the
+    /// accelerations and reactions are not accurate to the tolerance set with SetAssemblyAccelerationTolerance().
     /// The maximum number of iterations and the tolerance refer to the Newton-Raphson iteration for position-level.
-    /// Iterations and tolerance for the inner linear solver must be set on the solver itself.
+    /// Iterations and tolerance for the inner linear solver must be set on the solver itself. Accurate accelerations
+    /// require an accurate solver: prefer a direct solver, MINRES, GMRES or, with unilateral constraints,
+    /// BARZILAIBORWEIN over the default PSOR.
+    /// Contacts: assembly does not run collision detection, so contacts are present only if the system was already
+    /// advanced in time or ComputeCollisions() was called explicitly. NSC contacts are not supported by the assembly
+    /// analysis (see ChAssemblyAnalysis): if an NSC system has contacts at the call, no assembly is performed, the
+    /// system state is left unchanged, and the function returns UNSUPPORTED_CONTACTS. To obtain consistent
+    /// accelerations or reactions with contacts, use an SMC system (where contacts enter as forces and assemble
+    /// correctly; SMC contact forces are evaluated at collision detection, so call ComputeCollisions() after
+    /// changing the state) or a short settling run with DoStepDynamics().
     AssemblyAnalysis::ExitFlag DoAssembly(int action, int max_num_iterationsNR = 6, double abstol_residualNR = 1e-10, double reltol_updateNR = 1e-6, double abstol_updateNR = 1e-6);
+
+    /// Set the tolerance for the accuracy check of the acceleration-level assembly (default: 1e-2).
+    /// The accelerations are a velocity increment over a 1e-6 internal step, so the largest constraint residual
+    /// left by the solver, divided by that step, estimates their error (in the units of the constraint, e.g.,
+    /// m/s^2 or rad/s^2). If this estimate exceeds the tolerance, DoAssembly() returns ACCELERATION_INACCURATE.
+    /// The check covers the constraint equations only, so it cannot detect an inaccurate solution of the
+    /// equations of motion themselves, as may be returned by BICGSTAB.
+    void SetAssemblyAccelerationTolerance(double tol) { assembly_acc_tol = tol; }
+
+    /// Get the tolerance for the accuracy check of the acceleration-level assembly.
+    double GetAssemblyAccelerationTolerance() const { return assembly_acc_tol; }
 
     /// Remove redundant constraints through QR decomposition of the constraints Jacobian matrix.
     /// This function can be used to improve the stability and performance of the system by removing redundant
@@ -296,6 +317,16 @@ class ChApi ChSystem : public ChIntegrableIIorder {
     /// Get the underlying assembly containing all physics items.
     const ChAssembly& GetAssembly() const { return assembly; }
 
+    /// Return true if the internal state of all physics items in this system can be saved in a checkpoint.
+    /// This includes the contact container.
+    bool SupportsCheckpoint() const { return assembly.SupportsCheckpoint() && (!contact_container || contact_container->SupportsCheckpoint()); }
+
+    /// Save the internal state of all physics items (data not stored in the system state vectors).
+    void SaveInternalState(ChCheckpointWriter& writer) const { assembly.SaveInternalState(writer); }
+
+    /// Load the internal state of all physics items, as saved by SaveInternalState.
+    void LoadInternalState(ChCheckpointReader& reader) { assembly.LoadInternalState(reader); }
+
     /// Attach a body to the underlying assembly.
     virtual void AddBody(std::shared_ptr<ChBody> body);
 
@@ -328,6 +359,11 @@ class ChApi ChSystem : public ChIntegrableIIorder {
     /// If some items are queued for addition in the assembly, using AddBatch(), this will
     /// effectively add them and clean the batch. Called automatically at each Setup().
     void FlushBatch() { assembly.FlushBatch(); }
+
+    // Removal functions.
+    // The collision models of the removed items are also removed from the collision system and, if an item that can be
+    // in contact is removed, all current contacts are discarded (they are recreated by the next collision detection).
+    // Note that removal of collision models is not supported by the Multicore collision system.
 
     /// Remove a body from this assembly.
     virtual void RemoveBody(std::shared_ptr<ChBody> body);
@@ -439,7 +475,8 @@ class ChApi ChSystem : public ChIntegrableIIorder {
     /// readable form, mostly for debugging purposes. Level is the tab spacing at the left.
     void ShowHierarchy(std::ostream& m_file, int level = 0) const { assembly.ShowHierarchy(m_file, level); }
 
-    /// Removes all bodies/marker/forces/links/contacts, also resets timers and events.
+    /// Remove all physics items (bodies, shafts, links, meshes, and other items), their collision models, and all
+    /// contacts.
     void Clear();
 
     /// Return the contact method supported by this system.
@@ -648,7 +685,7 @@ class ChApi ChSystem : public ChIntegrableIIorder {
     void InjectConstraints(ChSystemDescriptor& sys_descriptor);
 
     /// Compute and load current Jacobians in encapsulated ChConstraint objects.
-    void LoadConstraintJacobians();
+    virtual void LoadConstraintJacobians() override;
 
     /// Register with the given system descriptor any ChKRMBlock objects associated with items in the system.
     void InjectKRMMatrices(ChSystemDescriptor& sys_descriptor);
@@ -808,10 +845,10 @@ class ChApi ChSystem : public ChIntegrableIIorder {
     virtual void DescriptorPrepareInject(ChSystemDescriptor& sys_descriptor);
 
     /// Initial system setup before analysis.
-    /// This function performs an initial system setup, once system construction is completed and before an analysis.
-    /// This function also initializes the collision system (if any), as well as any visualization system to which this
-    /// Chrono system was attached. The initialization function is called automatically before starting any type of
-    /// analysis.
+    /// This function initializes all physics items that are not yet initialized (see ChPhysicsItem::InitializePhase).
+    /// The first call also initializes the collision system (if any), as well as any visualization system to which
+    /// this Chrono system was attached. The initialization function is called automatically before starting any type
+    /// of analysis and can be safely called at any time.
     void Initialize();
 
     /// Return the resultant applied force on the specified body.
@@ -836,6 +873,9 @@ class ChApi ChSystem : public ChIntegrableIIorder {
     /// Optionally, the collision detection phase can be skipped for this step (if do_collision=false).
     virtual bool AdvanceDynamics(bool do_collision = true);
 
+    /// Run both initialization phases on all physics items that are not yet initialized.
+    void InitializeItems();
+
     std::string m_name;                                     ///< system name
     ChAssembly assembly;                                    ///< underlying mechanical assembly
     std::shared_ptr<ChContactContainer> contact_container;  ///< the container of contacts
@@ -844,6 +884,7 @@ class ChApi ChSystem : public ChIntegrableIIorder {
 
     bool is_initialized;  ///< if false, an initial setup is required (i.e. a call to Initialize)
     bool is_updated;      ///< if false, a new update is required (i.e. a call to Update)
+    bool m_items_pending;  ///< if true, some physics items may need initialization
 
     unsigned int m_num_coords_pos;  ///< num of scalar coordinates at position level for all active bodies
     unsigned int m_num_coords_vel;  ///< num of scalar coordinates at velocity level for all active bodies
@@ -853,6 +894,8 @@ class ChApi ChSystem : public ChIntegrableIIorder {
 
     double ch_time;  ///< simulation time of the system
     double step;     ///< time step
+
+    double assembly_acc_tol;  ///< tolerance for the accuracy check of the acceleration-level assembly
 
     bool use_sleeping;  ///< if true, put to sleep objects that come to rest
 
@@ -900,6 +943,7 @@ class ChApi ChSystem : public ChIntegrableIIorder {
 
     // Friend class declarations
 
+    friend class ChPhysicsItem;
     friend class ChAssembly;
     friend class ChBody;
 #ifdef CHRONO_FEA

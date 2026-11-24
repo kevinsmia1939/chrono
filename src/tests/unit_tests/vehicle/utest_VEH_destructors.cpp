@@ -83,7 +83,7 @@
 #ifdef CHRONO_FEA
     #include "chrono_vehicle/wheeled_vehicle/tire/ANCFTire.h"
     #include "chrono_vehicle/wheeled_vehicle/tire/ANCFToroidalTire.h"
-    #include "chrono_vehicle/wheeled_vehicle/tire/FEATire.h"
+    #include "chrono_vehicle/wheeled_vehicle/tire/SolidFEATire.h"
     #include "chrono_vehicle/wheeled_vehicle/tire/ReissnerTire.h"
     #include "chrono_vehicle/wheeled_vehicle/tire/ReissnerToroidalTire.h"
 #endif
@@ -173,7 +173,7 @@ TEST(ChronoVehicle, destructors_wheeled) {
         chrono_types::make_shared<SimpleDriveline>(GetVehicleDataFile("generic/driveline/DrivelineSimple.json"));
     }
     {
-        chrono_types::make_shared<SimpleDrivelineXWD>(GetVehicleDataFile("MAN_Kat1/driveline/MAN_5t_DrivelineSimpleXWD.json"));
+        chrono_types::make_shared<SimpleDrivelineXWD>(GetVehicleDataFile("MAN/driveline/MAN_5t_DrivelineSimpleXWD.json"));
     }
 
     // Steering templates
@@ -185,7 +185,7 @@ TEST(ChronoVehicle, destructors_wheeled) {
         chrono_types::make_shared<RackPinion>(GetVehicleDataFile("generic/steering/RackPinion.json"));
     }
     {
-        chrono_types::make_shared<RotaryArm>(GetVehicleDataFile("MAN_Kat1/steering/MAN_10t_RotaryArm2.json"));
+        chrono_types::make_shared<RotaryArm>(GetVehicleDataFile("MAN/steering/MAN_10t_RotaryArm2.json"));
     }
 
     // Sub-chassis templates
@@ -248,10 +248,10 @@ TEST(ChronoVehicle, destructors_wheeled) {
         chrono_types::make_shared<SolidAxle>(GetVehicleDataFile("generic/suspension/SolidAxle.json"));
     }
     {
-        chrono_types::make_shared<SolidBellcrankThreeLinkAxle>(GetVehicleDataFile("MAN_Kat1/suspension/MAN_5t_FrontSolidThreeLinkAxle.json"));
+        chrono_types::make_shared<SolidBellcrankThreeLinkAxle>(GetVehicleDataFile("MAN/suspension/MAN_5t_FrontSolidThreeLinkAxle.json"));
     }
     {
-        chrono_types::make_shared<SolidThreeLinkAxle>(GetVehicleDataFile("MAN_Kat1/suspension/MAN_5t_RearSolidThreeLinkAxle.json"));
+        chrono_types::make_shared<SolidThreeLinkAxle>(GetVehicleDataFile("MAN/suspension/MAN_5t_RearSolidThreeLinkAxle.json"));
     }
     {
         chrono_types::make_shared<ThreeLinkIRS>(GetVehicleDataFile("generic/suspension/ThreeLinkIRS.json"));
@@ -297,7 +297,7 @@ TEST(ChronoVehicle, destructors_wheeled) {
         chrono_types::make_shared<ANCFToroidalTire>(GetVehicleDataFile("generic/tire/ANCFToroidalTire.json"));
     }
     {
-        chrono_types::make_shared<FEATire>(GetVehicleDataFile("hmmwv/tire/HMMWV_FEATire.json"));
+        chrono_types::make_shared<SolidFEATire>(GetVehicleDataFile("hmmwv/tire/HMMWV_SolidFEATire.json"));
     }
     {
         chrono_types::make_shared<ReissnerTire>(GetVehicleDataFile("hmmwv/tire/HMMWV_ReissnerTire.json"));

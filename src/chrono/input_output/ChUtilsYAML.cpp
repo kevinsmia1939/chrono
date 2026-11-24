@@ -56,7 +56,13 @@ void ChYamlFileHandler::SetReferenceDirectory(const std::string& pathname) {
         cerr << "Error: path '" << pathname << "' does not exist." << endl;
         throw std::runtime_error("Path does not exist");
     }
-    m_reference_dir = is_regular_file(path) ? path.parent_path().string() : pathname;
+    if (is_regular_file(path)) {
+        // A bare file name has an empty parent path; use the current directory in that case
+        auto parent = path.parent_path();
+        m_reference_dir = parent.empty() ? "." : parent.string();
+    } else {
+        m_reference_dir = pathname;
+    }
 }
 
 std::string ChYamlFileHandler::GetFilename(const std::string& filename) const {
@@ -485,12 +491,14 @@ ChColormap::Type ReadColorMapType(const YAML::Node& a) {
         return ChColormap::Type::JET;
     if (val == "KINDLMANN")
         return ChColormap::Type::KINDLMANN;
-    if (val == "BLACK_BODY")
-        return ChColormap::Type::BLACK_BODY;
     if (val == "PLASMA")
         return ChColormap::Type::PLASMA;
     if (val == "RED_BLUE")
         return ChColormap::Type::RED_BLUE;
+    if (val == "REGOLITH")
+        return ChColormap::Type::REGOLITH;
+    if (val == "VIRIDIS")
+        return ChColormap::Type::VIRIDIS;
     return ChColormap::Type::JET;
 }
 

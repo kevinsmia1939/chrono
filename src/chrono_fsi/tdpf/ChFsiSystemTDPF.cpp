@@ -21,8 +21,6 @@
 
 #include "chrono/utils/ChUtils.h"
 
-#include "chrono/physics/ChLoadHydrodynamics.h"
-
 #include "chrono_fsi/tdpf/ChFsiSystemTDPF.h"
 #include "chrono_fsi/tdpf/ChFsiInterfaceTDPF.h"
 
@@ -34,6 +32,11 @@ namespace tdpf {
 
 ChFsiSystemTDPF::ChFsiSystemTDPF(ChSystem* sysMBS, ChFsiFluidSystemTDPF* sysTDPF, bool use_generic_interface)
     : ChFsiSystem(sysMBS, sysTDPF), m_sysTDPF(sysTDPF), m_generic_fsi_interface(use_generic_interface) {
+    // The TDPF hydrostatic restoring force is stiff in the body position, so a fluid force that lags the solid state
+    // acts as negative damping and corrupts the response (it can render a decay test undamped or even unstable).
+    // This is fixed, not configurable: CouplingScheme::CONCURRENT is never valid for this solver.
+    SetCouplingScheme(CouplingScheme::SEQUENTIAL);
+
     if (use_generic_interface)
         m_fsi_interface = chrono_types::make_shared<ChFsiInterfaceGeneric>(sysMBS, sysTDPF);
     else
@@ -51,6 +54,24 @@ void ChFsiSystemTDPF::SetHydroFilename(const std::string& filename) {
     m_sysTDPF->SetHydroFilename(filename);
 }
 
+void ChFsiSystemTDPF::SetHydroReferencePoints(const std::vector<ChVector3d>& points) {
+    if (m_is_initialized) {
+        std::cerr << "ChFsiSystemTDPF::SetHydroReferencePoints can only be called before initialization." << std::endl;
+        return;
+    }
+
+    m_sysTDPF->SetHydroReferencePoints(points);
+}
+
+void ChFsiSystemTDPF::SetBodyAddedMassBlocks(const std::vector<ChMatrixDynamic<>>& blocks) {
+    if (!m_is_initialized) {
+        std::cerr << "ChFsiSystemTDPF::SetBodyAddedMassBlocks can only be called after initialization." << std::endl;
+        return;
+    }
+
+    m_hydro_load->SetBodyAddedMassBlocks(blocks);
+}
+
 void ChFsiSystemTDPF::Initialize() {
     if (m_verbose)
         std::cout << "FSI system has " << (m_generic_fsi_interface ? "generic" : "custom") << " interface" << std::endl;
@@ -62,16 +83,35 @@ void ChFsiSystemTDPF::Initialize() {
     auto num_bodies = m_fsi_interface->GetNumBodies();
     if (num_bodies > 0) {
         auto& fsi_bodies = m_fsi_interface->GetBodies();
-        const auto& body_info = m_sysTDPF->m_impl->m_hydro_data.GetBodyInfos();
+        const auto& body_info = m_sysTDPF->m_impl->GetHydroData().GetBodyInfos();
 
-        ChBodyAddedMassBlocks body_blocks;
-        for (size_t i = 0; i < num_bodies; i++) {
-            body_blocks.push_back({fsi_bodies[i]->body, body_info[i].inf_added_mass});
+        // The hydrodynamic coefficients (from BEM data) are expressed in inertial axes, about the specified points
+        // (if any). Shift them to the origins of the body reference frames, at the initial body orientations.
+        const auto& ref_points = m_sysTDPF->m_hydro_ref_points;
+        if (!ref_points.empty() && ref_points.size() != num_bodies) {
+            std::cerr << "ERROR: " << ref_points.size() << " hydro reference points specified for " << num_bodies << " FSI bodies." << std::endl;
+            throw std::runtime_error("Incorrect number of hydro reference points");
         }
 
-        auto hydro_load = chrono_types::make_shared<ChLoadHydrodynamics>(body_blocks);
-        hydro_load->SetVerbose(m_verbose);
-        fsi_bodies[0]->body->GetSystem()->Add(hydro_load);
+        std::vector<ChMatrixDynamic<>> blocks;
+        for (size_t i = 0; i < num_bodies; i++)
+            blocks.push_back(body_info[i].inf_added_mass);
+
+        if (!ref_points.empty()) {
+            std::vector<ChMatrix66d> shifts;
+            for (size_t i = 0; i < num_bodies; i++)
+                shifts.push_back(ChLoadHydrodynamics::ComputeShiftTransformation(*fsi_bodies[i]->body, ref_points[i], ChLoadHydrodynamics::AddedMassFrame::INERTIAL));
+            ChLoadHydrodynamics::ShiftBlocks(blocks, shifts);
+        }
+
+        ChBodyAddedMassBlocks body_blocks;
+        for (size_t i = 0; i < num_bodies; i++)
+            body_blocks.push_back({fsi_bodies[i]->body, blocks[i]});
+
+        m_hydro_load = chrono_types::make_shared<ChLoadHydrodynamics>(body_blocks);
+        m_hydro_load->SetAddedMassFrame(ChLoadHydrodynamics::AddedMassFrame::INERTIAL);
+        m_hydro_load->SetVerbose(m_verbose);
+        fsi_bodies[0]->body->GetSystem()->Add(m_hydro_load);
     }
 }
 

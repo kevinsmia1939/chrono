@@ -698,10 +698,17 @@ void ChVisualSystemVSG::Initialize() {
     windowTraits->fullscreen = m_use_fullscreen;
     windowTraits->screenNum = m_screen_num;
 
+    // The label font is the first file read from the Chrono data directory, which also provides the shaders and GUI
+    // textures, so stop here if it cannot be found
     m_label_font = vsg::read_cast<vsg::Font>(m_label_font_path, m_options);
     if (!m_label_font) {
-        cout << "Failed to read font : " << m_label_font_path << endl;
-        return;
+        std::string search_paths;
+        for (const auto& path : m_options->paths)
+            search_paths += " '" + path.string() + "'";
+        std::string msg = "ChVisualSystemVSG: cannot read font file '" + m_label_font_path + "' (search paths:" + search_paths +
+                          "). Call SetChronoDataPath with the Chrono data directory before creating the visual system.";
+        cerr << "Error: " << msg << endl;
+        throw std::runtime_error(msg);
     }
 
     m_scene = vsg::Group::create();
@@ -798,8 +805,8 @@ void ChVisualSystemVSG::Initialize() {
 
     m_window = vsg::Window::create(windowTraits);
     if (!m_window) {
-        cout << "Could not create window." << endl;
-        return;
+        cerr << "Error: ChVisualSystemVSG: could not create window." << endl;
+        throw std::runtime_error("ChVisualSystemVSG: could not create window");
     }
 
     ////auto& limits = m_window->getOrCreatePhysicalDevice()->getProperties().limits;  // VkPhysicalDeviceLimits
@@ -834,7 +841,7 @@ void ChVisualSystemVSG::Initialize() {
         cout << "----------------------------------------------------" << endl;
     }
 
-    m_window->clearColor() = vsg::vec4CH(m_background_color, 1.0f);
+    m_window->clearColor() = vsg::vec4CHLinear(m_background_color, 1.0f);
     m_viewer->addWindow(m_window);
 
     // set up the camera
@@ -855,9 +862,11 @@ void ChVisualSystemVSG::Initialize() {
     m_renderCommandGraph = vsg::CommandGraph::create(m_window, m_renderGraph);
     m_computeCommandGraph = vsg::CommandGraph::create(m_window);
 
-    // initialize ImGui
+    // Initialize ImGui.
+    // Load the default GUI window layout from the Chrono data directory, but never save the layout (no ImGui ini file).
     ImGui::CreateContext();
-    ImGui::GetIO().IniFilename = "../data/vsg/imgui.ini";
+    ImGui::GetIO().IniFilename = nullptr;
+    ImGui::LoadIniSettingsFromDisk(GetChronoDataFile("vsg/imgui.ini").c_str());
 
 #ifdef __APPLE__
     // application runs on retina display by default (window 800*600 generates a viewport 1600*1200)
@@ -877,8 +886,9 @@ void ChVisualSystemVSG::Initialize() {
             ImGuiIO& io = ImGui::GetIO();
             auto imguiFont = io.Fonts->AddFontFromFileTTF(c_fontFile.c_str(), m_gui_font_size);
             if (!imguiFont) {
-                cout << "Failed to load font: " << c_fontFile << endl;
-                return;
+                std::string msg = "ChVisualSystemVSG: cannot load GUI font file '" + c_fontFile + "'";
+                cerr << "Error: " << msg << endl;
+                throw std::runtime_error(msg);
             }
         }
 #ifdef __APPLE__
@@ -1050,7 +1060,7 @@ void ChVisualSystemVSG::Render() {
                 m_body_labels_layout[iPos]->horizontal = vsg::vec3(label_size, 0, 0);
                 m_body_labels_layout[iPos]->vertical = vsg::vec3(0, label_size, 0);
                 m_body_labels_layout[iPos]->position = vsg::vec3(c_pos[iPos].x(), c_pos[iPos].y() - label_size / 2, c_pos[iPos].z());
-                m_body_labels_layout[iPos]->color = vsg::vec4CH(m_body_labels_color, 1.0f);
+                m_body_labels_layout[iPos]->color = vsg::vec4CHLinear(m_body_labels_color, 1.0f);
                 m_body_labels_text[iPos]->setup(0, m_options);
             }
         }
@@ -1074,7 +1084,7 @@ void ChVisualSystemVSG::Render() {
                 m_link_labels_layout[iPos]->horizontal = vsg::vec3(label_size, 0, 0);
                 m_link_labels_layout[iPos]->vertical = vsg::vec3(0, label_size, 0);
                 m_link_labels_layout[iPos]->position = vsg::vec3(c_pos[iPos].x(), c_pos[iPos].y() - label_size / 2, c_pos[iPos].z());
-                m_link_labels_layout[iPos]->color = vsg::vec4CH(m_link_labels_color, 1.0f);
+                m_link_labels_layout[iPos]->color = vsg::vec4CHLinear(m_link_labels_color, 1.0f);
                 m_link_labels_text[iPos]->setup(0, m_options);
             }
         }
@@ -1109,9 +1119,7 @@ void ChVisualSystemVSG::Render() {
         m_contact_forces_color_changed = false;
     }
 
-    // Dynamic data transfer CPU->GPU for point clouds
-    // use direct pointer access to avoid temporary object construction
-    // Dynamic colors are handled by the Vulkan compute shader
+    // Update particle transforms and colors not supplied by a compute shader.
     if (!m_clouds.empty()) {
         auto hide_pos = m_lookAt->eye - (m_lookAt->center - m_lookAt->eye) * 0.1;
         for (const auto& cloud : m_clouds) {
@@ -1129,6 +1137,12 @@ void ChVisualSystemVSG::Render() {
                     }
                 }
                 cloud.positions->dirty();
+            }
+            if (cloud.dynamic_colors && !cloud.use_compute_colors) {
+                unsigned int k = 0;
+                for (auto& color : *cloud.colors)
+                    color = vsg::vec4CH(cloud.pcloud->GetVisualColor(k++));
+                cloud.colors->dirty();
             }
         }
     }
@@ -1591,6 +1605,8 @@ void ChVisualSystemVSG::BindCOMSymbols(const std::vector<ChVector3d>& c_pos) {
     stateInfo.billboard = true;
     stateInfo.lighting = false;
     stateInfo.image = vsg::read_cast<vsg::Data>(symbol_texture_filename, m_options);
+    if (stateInfo.image)  // color texture, authored in sRGB
+        stateInfo.image->properties.format = vsg::uNorm_to_sRGB(stateInfo.image->properties.format);
 
     // Convert body COM positions to VSG array
     auto v_pos = vsg::vec4Array::create(c_pos.size());
@@ -1635,7 +1651,7 @@ void ChVisualSystemVSG::BindBodyLabels() {
         layout->position = vsg::vec3(0.0, 0.0, 0.0);
         layout->horizontal = vsg::vec3(m_label_size, 0.0, 0.0);
         layout->vertical = vsg::vec3(0.0, m_label_size, 0.0);
-        layout->color = vsg::vec4CH(m_body_labels_color, 1.0f);
+        layout->color = vsg::vec4CHLinear(m_body_labels_color, 1.0f);
         dynamic_text->text = text;
         dynamic_text->font = m_label_font;
         dynamic_text->layout = layout;
@@ -1671,7 +1687,7 @@ void ChVisualSystemVSG::BindLinkLabels() {
         layout->position = vsg::vec3(0.0, 0.0, 0.0);
         layout->horizontal = vsg::vec3(m_label_size, 0.0, 0.0);
         layout->vertical = vsg::vec3(0.0, m_label_size, 0.0);
-        layout->color = vsg::vec4CH(m_link_labels_color, 1.0f);
+        layout->color = vsg::vec4CHLinear(m_link_labels_color, 1.0f);
         dynamic_text->text = text;
         dynamic_text->font = m_label_font;
         dynamic_text->layout = layout;
@@ -1746,7 +1762,14 @@ void ChVisualSystemVSG::BindAll() {
 
 // -----------------------------------------------------------------------------
 
+void ChVisualSystemVSG::ExcludeFromBinding(std::shared_ptr<ChBody> body) {
+    m_excluded_bodies.insert(body.get());
+}
+
 void ChVisualSystemVSG::BindBody(const std::shared_ptr<ChBody>& body) {
+    if (m_excluded_bodies.count(body.get()) > 0)
+        return;
+
     if (!body->IsFixed()) {
         BindReferenceFrame(body, ObjectType::BODY);
         BindBodyCOMFrame(body);
@@ -2152,7 +2175,7 @@ void ChVisualSystemVSG::BindParticleCloud(const std::shared_ptr<ChParticleCloud>
             cloud.colors->set(k, vsg::vec4(0, 0, 0, 1));
         cloud.colors->properties.dataVariance = vsg::DYNAMIC_DATA;
     } else {
-        geomInfo.color.set(shape_color.R, shape_color.G, shape_color.B, 1.0);
+        geomInfo.color = vsg::vec4CHLinear(shape_color, 1.0f);
     }
 
     cloud.positions = vsg::vec3Array::create(num_particles);
@@ -2600,7 +2623,7 @@ void ChVisualSystemVSG::PopulateCollisionShapeFixed(vsg::ref_ptr<vsg::Group> gro
             case ChCollisionShape::Type::ROUNDEDBOX: {
                 auto rbox = std::static_pointer_cast<ChCollisionShapeRoundedBox>(shape);
                 const ChVector3d& lengths = rbox->GetLengths();
-                double sradius = rbox->GetSRadius();
+                double sradius = rbox->GetSweepRadius();
                 auto transform = vsg::MatrixTransform::create();
                 transform->matrix = vsg::dmat4CH(X_SM);
                 auto grp = m_shapeBuilder->CreatePbrRoundedShape(ChVisualShape::Type::ROUNDEDBOX, material, transform, lengths, sradius, true, true);
@@ -2611,7 +2634,7 @@ void ChVisualSystemVSG::PopulateCollisionShapeFixed(vsg::ref_ptr<vsg::Group> gro
                 auto rcyl = std::static_pointer_cast<ChCollisionShapeRoundedCylinder>(shape);
                 double radius = rcyl->GetRadius();
                 double height = rcyl->GetHeight();
-                double sradius = rcyl->GetSRadius();
+                double sradius = rcyl->GetSweepRadius();
                 auto transform = vsg::MatrixTransform::create();
                 transform->matrix = vsg::dmat4CH(X_SM);
                 auto grp = m_shapeBuilder->CreatePbrRoundedShape(ChVisualShape::Type::ROUNDEDCYL, material, transform, ChVector3d(radius, radius, height), sradius, true, true);
@@ -3081,7 +3104,7 @@ void ChVisualSystemVSG::UpdateVisualModel(int id, const ChFrame<>& frame) {
 
 // -----------------------------------------------------------------------------
 
-void ChVisualSystemVSG::AddGrid(double x_step, double y_step, int nx, int ny, ChCoordsys<> pos, ChColor col) {
+void ChVisualSystemVSG::AddGrid(double x_step, double y_step, int nx, int ny, ChCoordsysd pos, ChColor col) {
     m_decoScene->addChild(m_shapeBuilder->CreateGrid(x_step, y_step, nx, ny, pos, col));
 }
 
@@ -3137,8 +3160,15 @@ void ChVisualSystemVSG::ExportScreenImage() {
 
     destinationImage->compile(device);
 
-    auto deviceMemory =
-        vsg::DeviceMemory::create(device, destinationImage->getMemoryRequirements(device->deviceID), VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    // Use host-cached memory if available: reading back from uncached (write-combined) memory is very slow.
+    auto memoryRequirements = destinationImage->getMemoryRequirements(device->deviceID);
+    vsg::ref_ptr<vsg::DeviceMemory> deviceMemory;
+    try {
+        deviceMemory =
+            vsg::DeviceMemory::create(device, memoryRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    } catch (const vsg::Exception&) {
+        deviceMemory = vsg::DeviceMemory::create(device, memoryRequirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
 
     destinationImage->bind(deviceMemory, 0);
 
@@ -3267,20 +3297,29 @@ void ChVisualSystemVSG::ExportScreenImage() {
     VkSubresourceLayout subResourceLayout;
     vkGetImageSubresourceLayout(*device, destinationImage->vk(device->deviceID), &subResource, &subResourceLayout);
 
+    // Copy the mapped memory into a CPU array before encoding, in a single sequential pass: the image writers read each
+    // pixel several times, which is very slow from memory that is not host-cached. The mapped memory is not contiguous
+    // like vsg::Array2D if rows are padded, so map it as a flat ubyteArray (unmapped on destruction) and copy row by row.
     size_t destRowWidth = width * sizeof(vsg::ubvec4);
-    vsg::ref_ptr<vsg::Data> imageData;
-    if (destRowWidth == subResourceLayout.rowPitch) {
-        imageData = vsg::MappedData<vsg::ubvec4Array2D>::create(deviceMemory, subResourceLayout.offset, 0, vsg::Data::Properties{targetImageFormat}, width, height);
-    } else {
-        // Map the buffer memory and assign as a ubyteArray that will automatically unmap itself on destruction.
-        // A ubyteArray is used as the graphics buffer memory is not contiguous like vsg::Array2D, so map to a flat
-        // buffer first then copy to Array2D.
-        auto mappedData =
-            vsg::MappedData<vsg::ubyteArray>::create(deviceMemory, subResourceLayout.offset, 0, vsg::Data::Properties{targetImageFormat}, subResourceLayout.rowPitch * height);
-        imageData = vsg::ubvec4Array2D::create(width, height, vsg::Data::Properties{targetImageFormat});
-        for (uint32_t row = 0; row < height; ++row) {
-            std::memcpy(imageData->dataPointer(row * width), mappedData->dataPointer(row * subResourceLayout.rowPitch), destRowWidth);
-        }
+    auto mappedData =
+        vsg::MappedData<vsg::ubyteArray>::create(deviceMemory, subResourceLayout.offset, 0, vsg::Data::Properties{targetImageFormat}, subResourceLayout.rowPitch * height);
+    auto imageData = vsg::ubvec4Array2D::create(width, height, vsg::Data::Properties{targetImageFormat});
+    for (uint32_t row = 0; row < height; ++row) {
+        std::memcpy(imageData->dataPointer(row * width), mappedData->dataPointer(row * subResourceLayout.rowPitch), destRowWidth);
+    }
+
+    // Make the image opaque. The alpha channel of the color buffer holds blending results for translucent objects; it
+    // is ignored on screen, but image viewers would show those objects washed out over the viewer background.
+    switch (targetImageFormat) {
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_B8G8R8A8_SRGB:
+            for (auto& pixel : *imageData)
+                pixel.a = 255;
+            break;
+        default:
+            break;
     }
 
     if (!vsg::write(imageData, m_image_filename, m_options)) {

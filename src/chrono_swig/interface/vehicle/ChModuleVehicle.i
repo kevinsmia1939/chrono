@@ -26,6 +26,7 @@
 
 // For optional casting of polimorphic objects:
 %include "../chrono_cast.i" 
+%include "../chrono_ignore_operators.i"
 
 // For supporting shared pointers:
 %include <std_shared_ptr.i>
@@ -266,7 +267,7 @@ using namespace chrono::vehicle::m113;
 %import(module = "pychrono.core") "../../../chrono/fea/ChMesh.h"
 %import(module = "pychrono.core") "chrono_swig/interface/core/ChBodyGeometry.i"
 
-%import(module = "pychrono.core") "../../../chrono/input_output/ChOutput.h"
+%import(module = "pychrono.core") "chrono_swig/interface/core/ChOutput.i"
 %import(module = "pychrono.core") "../../../chrono/input_output/ChCheckpoint.h"
 
 #ifdef SWIGPYTHON  // --------------------------------------------------------------------- PYTHON
@@ -506,8 +507,9 @@ Before adding a shared_ptr, mark as shared ptr all its inheritance tree in the m
 
 #ifdef CHRONO_FEA
 %DefSharedPtrDynamicCast(chrono::vehicle,ChTire, ChDeformableTire)
-%DefSharedPtrDynamicCast(chrono::vehicle,ChTire, ChANCFTire)
 %DefSharedPtrDynamicCast(chrono::vehicle,ChTire, ChFEATire)
+%DefSharedPtrDynamicCast(chrono::vehicle,ChTire, ChANCFTire)
+%DefSharedPtrDynamicCast(chrono::vehicle,ChTire, ChSolidFEATire)
 %DefSharedPtrDynamicCast(chrono::vehicle,ChTire, ChReissnerTire)
 #endif
 

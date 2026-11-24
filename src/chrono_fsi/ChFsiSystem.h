@@ -22,6 +22,7 @@
 #include "chrono/ChConfig.h"
 
 #include "chrono/physics/ChSystem.h"
+#include "chrono/functions/ChFunction.h"
 #ifdef CHRONO_FEA
     #include "chrono/fea/ChMesh.h"
     #include "chrono/fea/ChContactSurfaceMesh.h"
@@ -44,6 +45,17 @@ namespace fsi {
 /// A derived class must always set the FSI interface for coupling the two physics systems.
 class CH_FSI_API ChFsiSystem {
   public:
+    /// Co-simulation coupling scheme used by DoStepDynamics.
+    /// - CONCURRENT: Advance both phases concurrently, then exchange.
+    ///     The fluid force applied over a step is evaluated from the solid state one step earlier.
+    ///     Appropriate when the fluid advance is expensive and the coupling is weak (e.g. SPH),
+    ///     where overlapping the two phases pays for the extra step of lag.
+    /// - SEQUENTIAL: Exchange states, advance the fluid, exchange forces, then advance the MBS.
+    ///     The fluid force applied over a step is evaluated from the solid state at the beginning of that step.
+    ///     Required when the fluid force is stiff in the solid state (e.g. potential-flow hydrostatic restoring),
+    ///     where a lagged force acts as negative damping.
+    enum class CouplingScheme { CONCURRENT, SEQUENTIAL };
+
     /// Destructor for the FSI system.
     virtual ~ChFsiSystem();
 
@@ -70,12 +82,23 @@ class CH_FSI_API ChFsiSystem {
     /// This function sets gravity for both the fluid and multibody systems.
     void SetGravitationalAcceleration(const ChVector3d& gravity);
 
+    /// Prescribe the acceleration of the reference frame in which the FSI problem is simulated.
+    /// The problem is simulated in a translating, non-inertial frame (e.g., a shaking tank) with acceleration
+    /// a(t) = acceleration(t) * direction, where `direction` is normalized here. At the beginning of each step, both
+    /// the fluid and multibody systems are given the effective gravity g - a(t), where g is the gravitational
+    /// acceleration (as set with SetGravitationalAcceleration or, if never set, the gravity of the multibody system at
+    /// the first step). The fluid system must accept gravity changes after initialization (e.g., Chrono::FSI-SPH).
+    void SetFrameAcceleration(const ChVector3d& direction, std::shared_ptr<ChFunction> acceleration);
+
     /// Set integration step size for fluid dynamics.
     void SetStepSizeCFD(double step);
 
     /// Set integration step size for multibody dynamics.
     /// If a value is not provided, the MBS system is integrated with the same step used for fluid dynamics.
     void SetStepsizeMBD(double step);
+
+    /// Get the co-simulation coupling scheme in effect.
+    CouplingScheme GetCouplingScheme() const { return m_coupling; }
 
     /// Add a rigid body to the FSI system.
     std::shared_ptr<FsiBody> AddRigidBody(std::shared_ptr<ChBody> body, std::shared_ptr<ChBodyGeometry> geometry, bool check_embedded);
@@ -92,6 +115,16 @@ class CH_FSI_API ChFsiSystem {
     /// solid and fluid phases. If none are defined, one contact surface is created, but it is not attached to the FEA
     /// mesh.
     std::shared_ptr<FsiMesh2D> AddFeaMesh2D(std::shared_ptr<fea::ChMesh> mesh, bool check_embedded);
+
+    /// Add a set of FEA segments to the FSI system.
+    /// The fluid-solid interaction is based on the segments of the given surface with XYZ nodes; the surface need not be
+    /// associated with an FEA mesh. Returns an empty pointer if the surface has no such segments.
+    std::shared_ptr<FsiMesh1D> AddFeaMesh1D(std::shared_ptr<fea::ChContactSurfaceSegmentSet> surface, bool check_embedded);
+
+    /// Add a triangle surface over FEA nodes to the FSI system.
+    /// The fluid-solid interaction is based on the triangles of the given surface with XYZ nodes; the surface need not be
+    /// associated with an FEA mesh. Returns an empty pointer if the surface has no such triangles.
+    std::shared_ptr<FsiMesh2D> AddFeaMesh2D(std::shared_ptr<fea::ChContactSurfaceMesh> surface, bool check_embedded);
 
     /// Enable use and set method of obtaining FEA node directions.
     /// If provided, node direction vectors can be used to provide a more accurate interpolation of positions between
@@ -126,18 +159,35 @@ class CH_FSI_API ChFsiSystem {
     void RegisterMBDCallback(std::shared_ptr<MBDCallback> callback) { m_MBD_callback = callback; }
 
     /// Function to advance the FSI system combined state.
-    /// This implements an explicit force-displacement co-simulation step:
+    /// This implements an explicit force-displacement co-simulation step, in one of two orderings selected by the
+    /// active CouplingScheme (see GetCouplingScheme).
+    ///
+    /// With CouplingScheme::CONCURRENT:
     /// - advance fluid dynamics (CFD) to new data exchange point;
     /// - advance multibody dynamics (MBD) to new data exchange point;
     /// - extract (from fluid system) and apply (to MBS) fluid forces on FSI solid objects;
     /// - extract (from MBS) and apply (to fluid system) new states for FSI solid objects;
+    /// No data exchange is performed before the first step; this assumes that FSI solid states and FSI solid forces
+    /// are properly initialized. The fluid forces applied to the MBS over a step were evaluated from the solid state
+    /// one step earlier.
+    ///
+    /// With CouplingScheme::SEQUENTIAL:
+    /// - extract (from MBS) and apply (to fluid system) new states for FSI solid objects;
+    /// - advance fluid dynamics (CFD) to new data exchange point;
+    /// - extract (from fluid system) and apply (to MBS) fluid forces on FSI solid objects;
+    /// - advance multibody dynamics (MBD) to new data exchange point.
+    /// The fluid forces applied to the MBS over a step are evaluated from the solid state at the beginning of that
+    /// step, and the two phases are advanced serially.
+    ///
     /// Notes:
-    /// - no data exchange is performed before the first step;
-    ///   this assumes that FSI solid states and FSI solid forces are properly initialized
-    /// - CFD advance calls ChFsiFluidSystem::DoStepDynamics multiple times (see SetStepsizeCFD);
-    /// - MBD advance is executed in a separate, concurrent thread and does not block execution;
+    /// - CFD advance calls ChFsiFluidSystem::DoStepDynamics multiple times (see SetStepSizeCFD);
+    /// - with CouplingScheme::CONCURRENT, MBD advance is executed in a separate, concurrent thread and does not
+    ///   block execution;
     /// - the caller can register a custom callback (of type ChFsiSystem::MBDCallback) to control MBD advance;
     /// - if MBDCallback not provided, MBD advance calls ChSystem::DoStepDynamics multiple times (see SetStepsizeMBD);
+    /// - with CouplingScheme::SEQUENTIAL, the reported step timer (GetTimerStep) includes the data exchange time;
+    /// - an exception thrown while advancing either phase propagates to the caller; with CouplingScheme::CONCURRENT,
+    ///   the MBD thread is always joined first and, if both phases throw, the CFD exception is the one reported.
     void DoStepDynamics(double step);
 
     /// Get current simulation time.
@@ -202,6 +252,12 @@ class CH_FSI_API ChFsiSystem {
     /// Derived classes must also construct and set the FSI interface (`m_fsi_interface`).
     ChFsiSystem(ChSystem* sysMBS, ChFsiFluidSystem* sysCFD);
 
+    /// Select the co-simulation coupling scheme.
+    /// This is deliberately not part of the public API: a concrete ChFsiSystem is responsible for selecting the
+    /// scheme that is valid for its fluid solver, and may choose to expose this setting to its own users.
+    /// Must be set before the first call to DoStepDynamics.
+    void SetCouplingScheme(CouplingScheme scheme) { m_coupling = scheme; }
+
     ChSystem* m_sysMBS;                               ///< multibody system
     ChFsiFluidSystem* m_sysCFD;                       ///< FSI fluid solver
     std::shared_ptr<ChFsiInterface> m_fsi_interface;  ///< FSI interface system
@@ -213,9 +269,19 @@ class CH_FSI_API ChFsiSystem {
     void AdvanceCFD(double step, double threshold);
     void AdvanceMBS(double step, double threshold);
 
+    /// Set the effective gravity g - a(t) in both phases, for a prescribed frame acceleration.
+    void ApplyFrameAcceleration(double time);
+
+    ChVector3d m_gravity;                     ///< gravitational acceleration (without frame acceleration)
+    bool m_gravity_set;                       ///< true if m_gravity was explicitly set
+    ChVector3d m_frame_acc_dir;               ///< direction of the frame acceleration
+    std::shared_ptr<ChFunction> m_frame_acc;  ///< magnitude of the frame acceleration (if any) as function of time
+
     double m_step_MBD;  ///< time step for multibody dynamics
     double m_step_CFD;  ///< time step for fluid dynamics
     double m_time;      ///< current fluid dynamics simulation time
+
+    CouplingScheme m_coupling;  ///< co-simulation coupling scheme
 
     std::shared_ptr<MBDCallback> m_MBD_callback;  ///< callback for MBS dynamics
 

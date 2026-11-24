@@ -16,9 +16,6 @@
 //
 // =============================================================================
 
-//// TODO:
-////   - use ChFsiParamsSPH::free_surface_threshold (kernel threshold) for both CFD and CRM (currently, only CRM)
-
 //// #define DEBUG_LOG
 
 #include <cmath>
@@ -119,7 +116,7 @@ void ChFsiFluidSystemSPH::InitParams() {
     m_paramsH->shifting_ppst_pull = Real(1.0);
     m_paramsH->shifting_beta_implicit = Real(1.0);
     m_paramsH->shifting_diffusion_A = Real(1.0);
-    m_paramsH->shifting_diffusion_AFSM = Real(3.0);
+    m_paramsH->shifting_diffusion_AFSM = Real(2.9);
     m_paramsH->shifting_diffusion_AFST = Real(2);
     m_paramsH->density_reinit_steps = 2147483647;
     m_paramsH->Conservative_Form = true;
@@ -153,7 +150,7 @@ void ChFsiFluidSystemSPH::InitParams() {
     m_paramsH->ClampPressure = false;
 
     // CRM SPH
-    m_paramsH->free_surface_threshold = Real(2.0);
+    m_paramsH->free_surface_threshold = Real(2.4);
     m_paramsH->free_flow_duration = Real(0);
     m_paramsH->Max_Pressure = Real(1e20);
 
@@ -303,10 +300,13 @@ void ChFsiFluidSystemSPH::SetInitPressure(const double height) {
 }
 
 void ChFsiFluidSystemSPH::SetGravitationalAcceleration(const ChVector3d& gravity) {
-    ChAssertAlways(!m_is_initialized);
     m_paramsH->gravity.x = gravity.x();
     m_paramsH->gravity.y = gravity.y();
     m_paramsH->gravity.z = gravity.z();
+
+    // On an initialized system, upload the new value to the device
+    if (m_is_initialized)
+        CopyParametersToDevice(m_paramsH, m_data_mgr->countersH);
 }
 
 void ChFsiFluidSystemSPH::SetBodyForce(const ChVector3d& force) {
@@ -340,6 +340,11 @@ void ChFsiFluidSystemSPH::SetDensity(double rho0) {
     m_paramsH->rho0 = rho0;
     m_paramsH->invrho0 = 1 / m_paramsH->rho0;
     m_paramsH->markerMass = m_paramsH->volume0 * m_paramsH->rho0;
+}
+
+void ChFsiFluidSystemSPH::SetBasePressure(double base_pressure) {
+    ChAssertAlways(!m_is_initialized);
+    m_paramsH->base_pressure = base_pressure;
 }
 
 void ChFsiFluidSystemSPH::SetShiftingPPSTParameters(double push, double pull) {
@@ -636,7 +641,7 @@ ChFsiFluidSystemSPH::SPHParameters::SPHParameters()
       shifting_ppst_pull(1.0),
       shifting_beta_implicit(1.0),
       shifting_diffusion_A(1.0),
-      shifting_diffusion_AFSM(3.0),
+      shifting_diffusion_AFSM(2.9),
       shifting_diffusion_AFST(2),
       min_distance_coefficient(0.01),
       density_reinit_steps(2e8),
@@ -650,7 +655,7 @@ ChFsiFluidSystemSPH::SPHParameters::SPHParameters()
       use_delta_sph(true),
       delta_sph_coefficient(0.1),
       artificial_viscosity(0.02),
-      free_surface_threshold(2.0),
+      free_surface_threshold(2.4),
       num_proximity_search_steps(1),
       eos_type(EosType::ISOTHERMAL),
       use_variable_time_step(false) {}
@@ -720,12 +725,17 @@ PhysicsProblem ChFsiFluidSystemSPH::GetPhysicsProblem() const {
 }
 
 std::string ChFsiFluidSystemSPH::GetPhysicsProblemString() const {
+    std::string problem = "";
     switch (m_paramsH->physics_problem) {
         case PhysicsProblem::CFD:
-            return "CFD";
+            problem = "CFD";
+            break;
         case PhysicsProblem::CRM:
-            return "CRM";
+            problem = "CRM";
+            break;
     }
+
+    return problem;
 }
 
 std::string ChFsiFluidSystemSPH::GetSphIntegrationSchemeString() const {
@@ -761,8 +771,10 @@ void ChFsiFluidSystemSPH::LoadSolidStates(const std::vector<FsiBodyState>& body_
         m_data_mgr->fsiBodyState_H->lin_vel[i] = ToReal3(body_states[i].lin_vel);
         m_data_mgr->fsiBodyState_H->lin_acc[i] = ToReal3(body_states[i].lin_acc);
         m_data_mgr->fsiBodyState_H->rot[i] = ToReal4(body_states[i].rot);
-        m_data_mgr->fsiBodyState_H->ang_vel[i] = ToReal3(body_states[i].ang_vel);
-        m_data_mgr->fsiBodyState_H->ang_acc[i] = ToReal3(body_states[i].ang_acc);
+        // The angular velocity and acceleration in FsiBodyState are expressed in the global frame, but the SPH solver
+        // uses them expressed in the body frame
+        m_data_mgr->fsiBodyState_H->ang_vel[i] = ToReal3(body_states[i].rot.RotateBack(body_states[i].ang_vel));
+        m_data_mgr->fsiBodyState_H->ang_acc[i] = ToReal3(body_states[i].rot.RotateBack(body_states[i].ang_acc));
     }
 
     if (num_bodies > 0)
@@ -796,8 +808,10 @@ void ChFsiFluidSystemSPH::LoadSolidStates(const std::vector<FsiBodyState>& body_
             m_data_mgr->fsiBodyState_H->lin_vel[i] = ToReal3(body_states[i].lin_vel);
             m_data_mgr->fsiBodyState_H->lin_acc[i] = ToReal3(body_states[i].lin_acc);
             m_data_mgr->fsiBodyState_H->rot[i] = ToReal4(body_states[i].rot);
-            m_data_mgr->fsiBodyState_H->ang_vel[i] = ToReal3(body_states[i].ang_vel);
-            m_data_mgr->fsiBodyState_H->ang_acc[i] = ToReal3(body_states[i].ang_acc);
+            // The angular velocity and acceleration in FsiBodyState are expressed in the global frame, but the SPH
+            // solver uses them expressed in the body frame
+            m_data_mgr->fsiBodyState_H->ang_vel[i] = ToReal3(body_states[i].rot.RotateBack(body_states[i].ang_vel));
+            m_data_mgr->fsiBodyState_H->ang_acc[i] = ToReal3(body_states[i].rot.RotateBack(body_states[i].ang_acc));
         }
 
         if (num_bodies > 0)
@@ -1243,7 +1257,7 @@ void ChFsiFluidSystemSPH::OnAddFeaMesh2D(std::shared_ptr<FsiMesh2D> fsi_mesh, bo
     m.check_embedded = check_embedded;
 
     CreateFeaMesh2DBce(fsi_mesh, m_pattern2D, m_remove_center2D, m.bce_ids, m.bce_coords, m.bce);
-    m_num_flex1D_meshes++;
+    m_num_flex2D_meshes++;
     m_num_flex2D_nodes += fsi_mesh->GetNumNodes();
     m_num_flex2D_elements += fsi_mesh->GetNumElements();
 
@@ -1259,6 +1273,28 @@ void GetOrthogonalAxes(const ChVector3d& x, ChVector3d& y, ChVector3d& z) {
     }
     z = Vcross(x, y_tmp).GetNormalized();
     y = Vcross(z, x);
+}
+
+// Host counterpart of get_projected_axes (see SphCustomMath.cuh).
+void GetProjectedAxes(const ChVector3d& x, const ChVector3d& n, ChVector3d& y, ChVector3d& z) {
+    ChVector3d n_perp = n - Vdot(n, x) * x;
+    double len = n_perp.Length();
+    if (len < 1e-3) {
+        GetOrthogonalAxes(x, y, z);
+        return;
+    }
+    y = n_perp / len;
+    z = Vcross(x, y);
+}
+
+// Initial reference normal for a 1-D segment with given end points.
+// The cross-section frames of all BCE markers on the segment are derived from this normal, which is then carried over
+// to the current segment configuration at each update of the BCE marker states (see SphBceManager).
+ChVector3d GetSegmentNormal(const ChVector3d& P0, const ChVector3d& P1) {
+    ChVector3d y;
+    ChVector3d z;
+    GetOrthogonalAxes((P1 - P0).GetNormalized(), y, z);
+    return y;
 }
 
 void ChFsiFluidSystemSPH::CreateFeaMesh1DBce(std::shared_ptr<FsiMesh1D> fsi_mesh,
@@ -1317,6 +1353,7 @@ void ChFsiFluidSystemSPH::CreateFeaMesh1DBce(std::shared_ptr<FsiMesh1D> fsi_mesh
         ////cout << segID << "  " << P0 << "  |  " << P1 << endl;
 
         auto len = (P1 - P0).Length();          // segment length
+        auto normal = GetSegmentNormal(P0, P1);  // segment reference normal
         int n = (int)std::ceil(len / spacing);  // required divisions on segment
 
         for (int i = 0; i <= n; i++) {
@@ -1330,6 +1367,11 @@ void ChFsiFluidSystemSPH::CreateFeaMesh1DBce(std::shared_ptr<FsiMesh1D> fsi_mesh
             ChVector3d P;
             ChVector3d D;
             if (use_node_directions) {
+                // Cubic Hermite interpolation; the Hermite tangents are the unit node directions scaled by the segment
+                // length (as in the device BCE marker update)
+                auto T0 = dir[i0] * len;
+                auto T1 = dir[i1] * len;
+
                 auto t2 = t * t;
                 auto t3 = t2 * t;
 
@@ -1337,23 +1379,23 @@ void ChFsiFluidSystemSPH::CreateFeaMesh1DBce(std::shared_ptr<FsiMesh1D> fsi_mesh
                 auto a1 = -2 * t3 + 3 * t2;
                 auto b0 = t3 - 2 * t2 + t;
                 auto b1 = t3 - t2;
-                P = P0 * a0 + P1 * a1 + dir[i0] * b0 + dir[i1] * b1;
+                P = P0 * a0 + P1 * a1 + T0 * b0 + T1 * b1;
 
                 auto a0d = 6 * t2 - 6 * t;
                 auto a1d = -6 * t2 + 6 * t;
                 auto b0d = 3 * t2 - 4 * t + 1;
                 auto b1d = 3 * t2 - 2 * t;
-                D = P0 * a0d + P1 * a1d + dir[i0] * b0d + dir[i1] * b1d;
+                D = P0 * a0d + P1 * a1d + T0 * b0d + T1 * b1d;
             } else {
                 P = P0 * (1 - t) + P1 * t;
                 D = P1 - P0;
             }
 
-            // Create local frame
+            // Create local frame (from the segment reference normal, for continuity along the segment)
             ChVector3d x_dir = D.GetNormalized();
             ChVector3d y_dir;
             ChVector3d z_dir;
-            GetOrthogonalAxes(x_dir, y_dir, z_dir);
+            GetProjectedAxes(x_dir, normal, y_dir, z_dir);
 
             for (int j = -num_layers + 1; j <= num_layers - 1; j += 2) {
                 for (int k = -num_layers + 1; k <= num_layers - 1; k += 2) {
@@ -1530,32 +1572,52 @@ void ChFsiFluidSystemSPH::AddRigidBodyBce(const FsiSphBody& fsisph_body) {
 
 //// TODO - eliminate code duplication in the two versions of Initialize()
 
-// Derive the domain-dependent grid quantities (periodic flags, bin sizes, grid
+// Derive the domain-dependent grid quantities (periodic flags, cell sizes, grid
 // dimensions, world origin, grid bounds) from the current computational domain
-// limits in m_paramsH. Called during Initialize and for post-initialization
-// computational-domain updates.
+// limits in m_paramsH, and check that the domain is long enough for the neighbor
+// search. Called during Initialize only: a post-initialization domain update goes
+// through ApplyComputationalDomain, which accepts only a translation and keeps the
+// grid derived here.
 void ChFsiFluidSystemSPH::DeriveDomainGridQuantities() {
     m_paramsH->x_periodic = m_paramsH->bc_type.x == BCType::PERIODIC;
     m_paramsH->y_periodic = m_paramsH->bc_type.y == BCType::PERIODIC;
     m_paramsH->z_periodic = m_paramsH->bc_type.z == BCType::PERIODIC;
 
-    // Set up subdomains for faster neighbor particle search
+    // Reject an axis with too few neighbor-search cells. The neighbor search visits the cells at
+    // offsets -1, 0, +1 around a particle's cell and wraps the cell index along a periodic axis, so a
+    // periodic axis needs at least 3 cells: with 2, the cells at -1 and +1 are the same cell, with 1,
+    // all three are, and the particles in a repeated cell are counted as neighbors more than once.
+    // Any axis needs at least 1 cell. A cell is at least as long as the kernel support radius.
+    auto check_num_cells = [](const char* axis, Real length, int num_cells, bool periodic, Real cell_size) {
+        int min_cells = periodic ? 3 : 1;
+        if (num_cells >= min_cells)
+            return;
+        auto cells = [](int n) { return std::to_string(n) + (n == 1 ? " cell" : " cells"); };
+        std::ostringstream msg;
+        msg << "The computational domain is too short along the " << (periodic ? "periodic " : "") << axis << " axis: its length " << length << " gives "
+            << cells(std::max(num_cells, 0)) << " of the neighbor-search grid, but " << (periodic ? "a periodic axis" : "an axis") << " needs at least " << min_cells
+            << ". Use a length of at least " << min_cells * cell_size << " (" << cells(min_cells) << " of size " << cell_size << ").";
+        cerr << "ERROR: " << msg.str() << endl;
+        throw std::runtime_error(msg.str());
+    };
+
+    // Set up subdomains for faster neighbor particle search. Each axis holds floor(L / (h_multiplier * h))
+    // cells of its own size, so the cells tile every axis exactly, which a periodic axis requires: a last
+    // cell shorter than the others would leave pairs across the periodic boundary outside each other's
+    // 3 x 3 x 3 block of cells.
     m_paramsH->Apply_BC_U = false;
-    int3 side0 = mI3((int)floor((m_paramsH->cMax.x - m_paramsH->cMin.x) / (m_paramsH->h_multiplier * m_paramsH->h)),
-                     (int)floor((m_paramsH->cMax.y - m_paramsH->cMin.y) / (m_paramsH->h_multiplier * m_paramsH->h)),
-                     (int)floor((m_paramsH->cMax.z - m_paramsH->cMin.z) / (m_paramsH->h_multiplier * m_paramsH->h)));
-    Real3 binSize3 = mR3((m_paramsH->cMax.x - m_paramsH->cMin.x) / side0.x, (m_paramsH->cMax.y - m_paramsH->cMin.y) / side0.y, (m_paramsH->cMax.z - m_paramsH->cMin.z) / side0.z);
-    // Bin size is derived from the x extent (the ternary max(x,y) previously computed
-    // here was dead code: it was immediately overwritten by binSize3.x).
-    m_paramsH->binSize0 = binSize3.x;
     m_paramsH->boxDims = m_paramsH->cMax - m_paramsH->cMin;
     m_paramsH->delta_pressure = mR3(0);
-    int3 SIDE = mI3(int((m_paramsH->cMax.x - m_paramsH->cMin.x) / m_paramsH->binSize0 + .1), int((m_paramsH->cMax.y - m_paramsH->cMin.y) / m_paramsH->binSize0 + .1),
-                    int((m_paramsH->cMax.z - m_paramsH->cMin.z) / m_paramsH->binSize0 + .1));
-    Real mBinSize = m_paramsH->binSize0;
-    m_paramsH->gridSize = SIDE;
+    Real3 length = m_paramsH->boxDims;
+    Real support_radius = m_paramsH->h_multiplier * m_paramsH->h;
+    int3 num_cells = mI3((int)floor(length.x / support_radius), (int)floor(length.y / support_radius), (int)floor(length.z / support_radius));
+    check_num_cells("x", length.x, num_cells.x, m_paramsH->x_periodic, support_radius);
+    check_num_cells("y", length.y, num_cells.y, m_paramsH->y_periodic, support_radius);
+    check_num_cells("z", length.z, num_cells.z, m_paramsH->z_periodic, support_radius);
+    m_paramsH->gridSize = num_cells;
     m_paramsH->worldOrigin = m_paramsH->cMin;
-    m_paramsH->cellSize = mR3(mBinSize, mBinSize, mBinSize);
+    m_paramsH->cellSize = mR3(length.x / num_cells.x, length.y / num_cells.y, length.z / num_cells.z);
+    m_paramsH->binSize0 = m_paramsH->cellSize.x;
 
     // Precompute grid min and max bounds considering whether we have periodic boundaries or not
     m_paramsH->minBounds = make_int3(m_paramsH->x_periodic ? INT_MIN : 0, m_paramsH->y_periodic ? INT_MIN : 0, m_paramsH->z_periodic ? INT_MIN : 0);
@@ -1746,8 +1808,7 @@ void ChFsiFluidSystemSPH::Initialize(const std::vector<FsiBodyState>& body_state
 
     CheckSPHParameters();
 
-    // Mark the fluid system as initialized. This arms the configuration-setter guards
-    // also for standalone use (without a ChFsiSystem wrapper, which sets this flag too).
+    // Mark the fluid system as initialized.
     m_is_initialized = true;
 }
 
@@ -1782,7 +1843,7 @@ void ChFsiFluidSystemSPH::Initialize(const std::vector<FsiBodyState>& body_state
 
     for (const auto& m : m_meshes2D) {
         AddFeaMesh2DBce(m);
-        m_num_flex1D_meshes++;
+        m_num_flex2D_meshes++;
         m_num_flex2D_nodes += m.fsi_mesh->GetNumNodes();
         m_num_flex2D_elements += m.fsi_mesh->GetNumElements();
     }
@@ -1959,8 +2020,7 @@ void ChFsiFluidSystemSPH::Initialize(const std::vector<FsiBodyState>& body_state
 
     CheckSPHParameters();
 
-    // Mark the fluid system as initialized. This arms the configuration-setter guards
-    // also for standalone use (without a ChFsiSystem wrapper, which sets this flag too).
+    // Mark the fluid system as initialized.
     m_is_initialized = true;
 }
 
@@ -1972,6 +2032,7 @@ void ChFsiFluidSystemSPH::AddFeaMesh1DBce(const FsiSphMesh1D& fsisph_mesh) {
         auto node0_index = m_num_flex1D_nodes + fsi_mesh->ptr2ind_map.at(seg->GetNode(0));
         auto node1_index = m_num_flex1D_nodes + fsi_mesh->ptr2ind_map.at(seg->GetNode(1));
         m_data_mgr->flex1D_Nodes_H.push_back(mI2(node0_index, node1_index));
+        m_data_mgr->flex1D_Normals_H.push_back(ToReal3(GetSegmentNormal(seg->GetNode(0)->GetPos(), seg->GetNode(1)->GetPos())));
     }
 
     // Add BCE markers and load their local coordinates and mesh associations
@@ -1993,7 +2054,7 @@ void ChFsiFluidSystemSPH::AddFeaMesh1DBce(const FsiSphMesh1D& fsisph_mesh) {
 void ChFsiFluidSystemSPH::AddFeaMesh2DBce(const FsiSphMesh2D& fsisph_mesh) {
     const auto& fsi_mesh = fsisph_mesh.fsi_mesh;
 
-    // Load index-based mesh connectivity (append to global list of 1-D flex segments)
+    // Load index-based mesh connectivity (append to global list of 2-D flex faces)
     for (const auto& tri : fsi_mesh->contact_surface->GetTrianglesXYZ()) {
         auto node0_index = m_num_flex2D_nodes + fsi_mesh->ptr2ind_map.at(tri->GetNode(0));
         auto node1_index = m_num_flex2D_nodes + fsi_mesh->ptr2ind_map.at(tri->GetNode(1));
@@ -2052,6 +2113,16 @@ void ChFsiFluidSystemSPH::OnDoStepDynamics(double time, double step) {
             m_data_mgr->ResizeArrays(m_data_mgr->countersH->numExtendedParticles);
         }
         m_fluid_dynamics->ProximitySearch();
+    } else {
+        // On a step without a proximity search the sorted arrays are not rebuilt from the original
+        // ones, so the solid BCE markers keep the velocity slot the previous step's boundary-condition
+        // kernel overwrote (CrmAdamiBC and CfdAdamiBC read the wall velocity from sortedVelMasD and
+        // write the extrapolated ghost velocity back into the same slot). Refresh the solid marker
+        // state from the current solid poses so the kernel reads a wall velocity, not its own output.
+        // Each update returns at once when there are no solids of its kind.
+        m_bce_mgr->UpdateBodyMarkerState();
+        m_bce_mgr->UpdateMeshMarker1DState();
+        m_bce_mgr->UpdateMeshMarker2DState();
     }
 
     // Zero-out step data (derivatives and intermediate vectors)
@@ -2063,7 +2134,7 @@ void ChFsiFluidSystemSPH::OnDoStepDynamics(double time, double step) {
     // Advance fluid particle states from `time` to `time+step`
     m_fluid_dynamics->DoStepDynamics(m_data_mgr->sortedSphMarkers2_D, time, step, m_paramsH->integration_scheme);
 
-    m_fluid_dynamics->CopySortedToOriginal(MarkerGroup::NON_SOLID, m_data_mgr->sortedSphMarkers2_D, m_data_mgr->sphMarkers_D);
+    m_fluid_dynamics->CopySortedToOriginal(MarkerGroupImpl::NON_SOLID, m_data_mgr->sortedSphMarkers2_D, m_data_mgr->sphMarkers_D);
 
     ChDebugLog("GPU Memory usage: " << m_data_mgr->GetCurrentGPUMemoryUsage() / 1024.0 / 1024.0 << " MB");
 
@@ -2085,7 +2156,7 @@ void ChFsiFluidSystemSPH::OnExchangeSolidStates() {
     m_bce_mgr->UpdateMeshMarker1DState();
     m_bce_mgr->UpdateMeshMarker2DState();
 
-    m_fluid_dynamics->CopySortedToOriginal(MarkerGroup::SOLID, m_data_mgr->sortedSphMarkers2_D, m_data_mgr->sphMarkers_D);
+    m_fluid_dynamics->CopySortedToOriginal(MarkerGroupImpl::SOLID, m_data_mgr->sortedSphMarkers2_D, m_data_mgr->sphMarkers_D);
 }
 
 void ChFsiFluidSystemSPH::SynchronizeCopyStream() const {
@@ -2339,7 +2410,7 @@ std::vector<ChVector3d> ChFsiFluidSystemSPH::CreatePointsBoxExterior(const ChVec
     ChVector3d delta(size.x() / (np.x() - 1), size.y() / (np.y() - 1), size.z() / (np.z() - 1));
 
     // Inflate box
-    ChVector3i Np = np + 2 * (num_layers - 1);
+    ChVector3i Np = np + ChVector3i(2 * (num_layers - 1));
     ChVector3d Size = size + 2.0 * (num_layers - 1.0) * delta;
 
     // Create exterior BCE layers
@@ -2629,13 +2700,9 @@ std::vector<ChVector3d> ChFsiFluidSystemSPH::CreatePointsCylinderExterior(double
 
     // Use polar coordinates
     if (polar) {
-        double rad_max = rad + num_layers * spacing;
-        double rad_min = rad_max - num_layers * spacing;
-        int np_r = (int)std::round((rad_max - rad_min) / spacing);
-        double delta_r = (rad_max - rad_min) / np_r;
-
-        for (int ir = 0; ir <= np_r; ir++) {
-            double r = rad_min + ir * delta_r;
+        // Side wall: num_layers layers, the first one on the cylinder surface
+        for (int ir = 0; ir < num_layers; ir++) {
+            double r = rad + ir * spacing;
             int np_th = (int)std::round(2 * pi * r / spacing);
             double delta_th = (np_th > 0) ? (2 * pi) / np_th : 1;
             for (int it = 0; it < np_th; it++) {
@@ -2650,8 +2717,8 @@ std::vector<ChVector3d> ChFsiFluidSystemSPH::CreatePointsCylinderExterior(double
         }
 
         // Add cylinder caps
-        np_r = (int)std::round(rad_min / spacing);
-        delta_r = rad_min / np_r;
+        int np_r = (int)std::round(rad / spacing);
+        double delta_r = rad / np_r;
 
         for (int ir = 0; ir < np_r; ir++) {
             double r = ir * delta_r;
@@ -2672,14 +2739,15 @@ std::vector<ChVector3d> ChFsiFluidSystemSPH::CreatePointsCylinderExterior(double
         return bce;
     }
 
-    // Inflate cylinder and accept/reject points on a Cartesian grid
+    // Inflate cylinder and accept/reject points on a Cartesian grid.
+    // Side wall points are those with rad <= r < rad + num_layers * delta_r (with a small tolerance).
     int np_r = (int)std::round(rad / spacing);
     double delta_r = rad / np_r;
     np_r += num_layers;
-    rad += num_layers * delta_r;
 
-    double rad_max = rad;
-    double rad_min = std::max(rad - num_layers * delta_r, 0.0);
+    double tol = 1e-6 * delta_r;
+    double rad_min = rad - tol;
+    double rad_max = rad + num_layers * delta_r - tol;
     double r_max2 = rad_max * rad_max;
     double r_min2 = rad_min * rad_min;
     for (int ix = -np_r; ix <= np_r; ix++) {
@@ -2793,72 +2861,96 @@ std::vector<ChVector3d> ChFsiFluidSystemSPH::CreatePointsTruncatedConeExterior(d
     double spacing = m_paramsH->d0;
     int num_layers = m_paramsH->num_bce_layers;
 
-    // Calculate actual spacing
+    // Calculate actual spacing in the axial direction
     int np_h = (int)std::round(height / spacing);
     double delta_h = height / np_h;
 
-    // Inflate cone
-    np_h += 2 * num_layers;
-    height += 2 * num_layers * delta_h;
+    // The cone base is at z = 0 and its tip at z = height; the side surface is r(z) = rad - k * z.
+    // Side wall layer i is the side surface offset by i * spacing along its outward normal, i.e., the cone with radius
+    // r(z) + i * dr. The base and tip caps have layers at z = -i * delta_h and z = height + i * delta_h, respectively.
+    // A true cone (rad_tip = 0) has no tip cap; its side wall layers extend up to their apex.
+    double k = (rad - rad_tip) / height;
+    double sk = std::sqrt(1 + k * k);
+    double dr = spacing * sk;
+    bool tip_cap = rad_tip > 0;
+    double z_ext = (num_layers - 1) * delta_h;
+
+    // Top of the side wall layer with given index
+    auto z_top = [&](int il) { return tip_cap ? height + z_ext : height + il * dr / k; };
 
     // Use polar coordinates
     if (polar) {
-        for (int iz = 0; iz < np_h; iz++) {
-            double z = iz * delta_h;
-            // Interpolate between rad_tip and rad based on the height
-            double rz = rad_tip + (rad - rad_tip) * (height - z) / height;
-            double rad_out = rz + num_layers * spacing;
-            double rad_in = std::max(rad_out - num_layers * spacing, 0.0);
-            if (iz >= np_h - num_layers)
-                rad_in = 0;
-            int np_r = (int)std::round((rad_out - rad_in) / spacing);
-            double delta_r = (rad_out - rad_in) / np_r;
-            for (int ir = 0; ir <= np_r; ir++) {
-                double r = rad_in + ir * delta_r;
-                int np_th = (int)std::round(2 * pi * r / spacing);
+        // Side wall layers, sampled along the cone generator and extended over the caps
+        for (int il = 0; il < num_layers; il++) {
+            double z_bot = -z_ext;
+            double z_max = z_top(il);
+            int np_g = std::max((int)std::round((z_max - z_bot) * sk / spacing), 1);
+            double delta_z = (z_max - z_bot) / np_g;
+            for (int iz = 0; iz <= np_g; iz++) {
+                double z = z_bot + iz * delta_z;
+                double r = std::max(rad - k * z + il * dr, 0.0);
+                int np_th = std::max((int)std::round(2 * pi * r / spacing), 1);
                 double delta_th = (2 * pi) / np_th;
                 for (int it = 0; it < np_th; it++) {
                     double theta = it * delta_th;
-                    double x = r * cos(theta);
-                    double y = r * sin(theta);
-                    bce.push_back({x, y, z});
+                    bce.push_back({r * cos(theta), r * sin(theta), z});
                 }
             }
         }
 
-        // Add tip point only for a true cone (rad_tip = 0)
-        if (rad_tip < std::numeric_limits<double>::epsilon()) {
-            bce.push_back({0.0, 0.0, height});
+        // Cap layers (disks up to the innermost side wall layer)
+        auto add_cap_layer = [&](double z) {
+            double r_cap = rad - k * z;
+            if (r_cap <= 0)
+                return;
+            int np_r = std::max((int)std::round(r_cap / spacing), 1);
+            double delta_r = r_cap / np_r;
+            for (int ir = 0; ir < np_r; ir++) {
+                double r = ir * delta_r;
+                int np_th = std::max((int)std::round(2 * pi * r / spacing), 1);
+                double delta_th = (2 * pi) / np_th;
+                for (int it = 0; it < np_th; it++) {
+                    double theta = it * delta_th;
+                    bce.push_back({r * cos(theta), r * sin(theta), z});
+                }
+            }
+        };
+        for (int il = 0; il < num_layers; il++) {
+            add_cap_layer(-il * delta_h);
+            if (tip_cap)
+                add_cap_layer(height + il * delta_h);
         }
-
-        //// TODO: add cap
 
         return bce;
     }
 
-    // Use a regular grid and accept/reject points
+    // Use a regular grid and accept/reject points.
+    // A point is a BCE point if it is outside the cone, its distance from the side surface (measured along the normal) is
+    // less than num_layers * spacing, and it lies on one of the first num_layers grid levels beyond each cap plane.
     int np_r = (int)std::round(rad / spacing);
     double delta_r = rad / np_r;
+    double r_ext = std::max(rad + k * z_ext, rad_tip - k * z_ext) + num_layers * dr;
+    np_r = (int)std::ceil(r_ext / delta_r) + 1;
 
-    for (int iz = 0; iz <= np_h; iz++) {
+    double tol = 1e-6 * spacing;
+    double d_max = num_layers * spacing - tol;
+    int iz_min = -(num_layers - 1);
+    int iz_max = (int)std::floor(z_top(num_layers - 1) / delta_h + 1e-6);
+
+    for (int iz = iz_min; iz <= iz_max; iz++) {
         double z = iz * delta_h;
-        // Interpolate between rad_tip and rad based on the height
-        double rz = rad_tip + (rad - rad_tip) * (height - z) / height;
-        double rad_out = rz + num_layers * spacing;
-        double rad_in = std::max(rad_out - num_layers * spacing, 0.0);
-        double r_out2 = rad_out * rad_out;
-        double r_in2 = rad_in * rad_in;
         for (int ix = -np_r; ix <= np_r; ix++) {
             double x = ix * delta_r;
             for (int iy = -np_r; iy <= np_r; iy++) {
                 double y = iy * delta_r;
-                double r2 = x * x + y * y;
-                if (r2 >= r_in2 && r2 <= r_out2) {
+                double r = std::sqrt(x * x + y * y);
+                double d_side = (r - (rad - k * z)) / sk;
+                double d_base = -z;
+                double d_tip = tip_cap ? z - height : -1;
+                bool outside = std::max({d_side, d_base, d_tip}) >= -tol;
+                if (outside && d_side < d_max && d_base <= z_ext + tol && d_tip <= z_ext + tol)
                     bce.push_back({x, y, z});
-                }
             }
-
-            //// TODO: add cap
         }
     }
 
@@ -3097,8 +3189,8 @@ size_t ChFsiFluidSystemSPH::GetNumBoundaryMarkers() const {
 
 //------------------------------------------------------------------------------
 
-std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticlePositions() const {
-    auto pos3 = GetPositions();
+std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticlePositions(MarkerGroup group) const {
+    auto pos3 = GetPositions(group);
 
     std::vector<ChVector3d> pos;
     for (const auto& p : pos3)
@@ -3107,8 +3199,8 @@ std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticlePositions() const {
     return pos;
 }
 
-std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticleVelocities() const {
-    auto vel3 = GetVelocities();
+std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticleVelocities(MarkerGroup group) const {
+    auto vel3 = GetVelocities(group);
 
     std::vector<ChVector3d> vel;
     for (const auto& v : vel3)
@@ -3117,8 +3209,8 @@ std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticleVelocities() const {
     return vel;
 }
 
-std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticleAccelerations() const {
-    auto acc3 = GetAccelerations();
+std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticleAccelerations(MarkerGroup group) const {
+    auto acc3 = GetAccelerations(group);
 
     std::vector<ChVector3d> acc;
     for (const auto& a : acc3)
@@ -3127,8 +3219,8 @@ std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticleAccelerations() const {
     return acc;
 }
 
-std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticleForces() const {
-    auto frc3 = GetForces();
+std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticleForces(MarkerGroup group) const {
+    auto frc3 = GetForces(group);
 
     std::vector<ChVector3d> frc;
     for (const auto& f : frc3)
@@ -3137,8 +3229,8 @@ std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticleForces() const {
     return frc;
 }
 
-std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticleFluidProperties() const {
-    auto props3 = GetProperties();
+std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticleFluidProperties(MarkerGroup group) const {
+    auto props3 = GetProperties(group);
 
     std::vector<ChVector3d> props;
     for (const auto& p : props3)
@@ -3147,9 +3239,37 @@ std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticleFluidProperties() const 
     return props;
 }
 
+std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticleStressDiagonal(MarkerGroup group) const {
+    if (m_paramsH->physics_problem != PhysicsProblem::CRM)
+        throw std::runtime_error("Particle stresses are only available for CRM problems.");
+
+    SynchronizeCopyStream();
+    auto tau3 = m_data_mgr->GetStressDiagonal(group);
+
+    std::vector<ChVector3d> tau;
+    for (const auto& t : tau3)
+        tau.push_back(ToChVector(t));
+
+    return tau;
+}
+
+std::vector<ChVector3d> ChFsiFluidSystemSPH::GetParticleStressOffDiagonal(MarkerGroup group) const {
+    if (m_paramsH->physics_problem != PhysicsProblem::CRM)
+        throw std::runtime_error("Particle stresses are only available for CRM problems.");
+
+    SynchronizeCopyStream();
+    auto tau3 = m_data_mgr->GetStressOffDiagonal(group);
+
+    std::vector<ChVector3d> tau;
+    for (const auto& t : tau3)
+        tau.push_back(ToChVector(t));
+
+    return tau;
+}
+
 //------------------------------------------------------------------------------
 
-std::vector<int> ChFsiFluidSystemSPH::FindParticlesInBox(const ChFrame<>& frame, const ChVector3d& size) {
+std::vector<int> ChFsiFluidSystemSPH::FindParticlesInBox(const ChFrame<>& frame, const ChVector3d& size, MarkerGroup group) {
     const ChVector3d& Pos = frame.GetPos();
     ChVector3d Ax = frame.GetRotMat().GetAxisX();
     ChVector3d Ay = frame.GetRotMat().GetAxisY();
@@ -3161,12 +3281,12 @@ std::vector<int> ChFsiFluidSystemSPH::FindParticlesInBox(const ChFrame<>& frame,
     auto ay = mR3(Ay.x(), Ay.y(), Ay.z());
     auto az = mR3(Az.x(), Az.y(), Az.z());
 
-    return m_data_mgr->FindParticlesInBox(hsize, pos, ax, ay, az);
+    return m_data_mgr->FindParticlesInBox(group, hsize, pos, ax, ay, az);
 }
 
-std::vector<Real3> ChFsiFluidSystemSPH::GetPositions() const {
+std::vector<Real3> ChFsiFluidSystemSPH::GetPositions(MarkerGroup group) const {
     SynchronizeCopyStream();
-    return m_data_mgr->GetPositions();
+    return m_data_mgr->GetPositions(group);
 }
 
 ChFsiSphMarkerDeviceView ChFsiFluidSystemSPH::GetMarkerDeviceView() const {
@@ -3181,24 +3301,37 @@ ChFsiSphMarkerDeviceView ChFsiFluidSystemSPH::GetMarkerDeviceView() const {
     return view;
 }
 
-std::vector<Real3> ChFsiFluidSystemSPH::GetVelocities() const {
+std::vector<Real3> ChFsiFluidSystemSPH::GetVelocities(MarkerGroup group) const {
     SynchronizeCopyStream();
-    return m_data_mgr->GetVelocities();
+    return m_data_mgr->GetVelocities(group);
 }
 
-std::vector<Real3> ChFsiFluidSystemSPH::GetAccelerations() const {
+std::vector<Real3> ChFsiFluidSystemSPH::GetAccelerations(MarkerGroup group) const {
     SynchronizeCopyStream();
-    return m_data_mgr->GetAccelerations();
+    auto acc = m_data_mgr->GetSphAccelerations(group);
+
+    // BCE markers on solids are last in both the SOLID and ALL groups
+    if (group != MarkerGroup::FLUID && m_bce_mgr) {
+        auto solid_acc = m_bce_mgr->GetSolidMarkerAccelerations();
+        std::copy(solid_acc.begin(), solid_acc.end(), acc.end() - solid_acc.size());
+    }
+
+    return acc;
 }
 
-std::vector<Real3> ChFsiFluidSystemSPH::GetForces() const {
+std::vector<Real3> ChFsiFluidSystemSPH::GetForces(MarkerGroup group) const {
     SynchronizeCopyStream();
-    return m_data_mgr->GetForces();
+    return m_data_mgr->GetForces(group);
 }
 
-std::vector<Real3> ChFsiFluidSystemSPH::GetProperties() const {
+std::vector<Real3> ChFsiFluidSystemSPH::GetProperties(MarkerGroup group) const {
     SynchronizeCopyStream();
-    return m_data_mgr->GetProperties();
+    return m_data_mgr->GetProperties(group);
+}
+
+std::vector<int> ChFsiFluidSystemSPH::GetFreeSurfaceFlags(MarkerGroup group) const {
+    SynchronizeCopyStream();
+    return m_data_mgr->GetFreeSurfaceFlags(group);
 }
 
 std::vector<Real3> ChFsiFluidSystemSPH::GetPositions(const std::vector<int>& indices) const {
@@ -3212,13 +3345,21 @@ std::vector<Real3> ChFsiFluidSystemSPH::GetVelocities(const std::vector<int>& in
 }
 
 std::vector<Real3> ChFsiFluidSystemSPH::GetAccelerations(const std::vector<int>& indices) const {
-    SynchronizeCopyStream();
-    return m_data_mgr->GetAccelerations(indices);
+    auto all = GetAccelerations(MarkerGroup::ALL);
+    std::vector<Real3> acc;
+    acc.reserve(indices.size());
+    for (auto i : indices)
+        acc.push_back(all[i]);
+    return acc;
 }
 
 std::vector<Real3> ChFsiFluidSystemSPH::GetForces(const std::vector<int>& indices) const {
-    SynchronizeCopyStream();
-    return m_data_mgr->GetForces(indices);
+    auto all = GetForces(MarkerGroup::ALL);
+    std::vector<Real3> frc;
+    frc.reserve(indices.size());
+    for (auto i : indices)
+        frc.push_back(all[i]);
+    return frc;
 }
 
 }  // end namespace sph

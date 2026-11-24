@@ -76,7 +76,7 @@ int main() {
     // Create and configure test rig
     // -----------------------------
 
-    ChWheelTestRig rig(wheel, tire, sys);
+    ChWheelTestRig rig(sys, wheel, tire);
 
     ////rig.SetGravitationalAcceleration(0);
     rig.SetNormalLoad(2000);
@@ -93,9 +93,9 @@ int main() {
 
     if (terrain_type == ChWheelTestRig::TerrainType::RIGID) {
         ChWheelTestRig::TerrainParamsRigid params;
-        params.friction = 0.8f;
-        params.restitution = 0;
-        params.Young_modulus = 2e7f;
+        params.mu = 0.8f;
+        params.cr = 0;
+        params.Y = 2e7f;
 
         rig.SetTerrainRigid(size, params);
     } else {
@@ -184,6 +184,12 @@ int main() {
 
     while (vis->Run()) {
         rig.Advance(step_size);
+
+        // End the simulation when the wheel reaches the end of the terrain patch
+        if (rig.PatchEndReached()) {
+            std::cout << "\nEnd of terrain patch reached at t = " << sys.GetChTime() << std::endl;
+            break;
+        }
 
         double body_x = rig.GetPos().x();
         double buffer_dist = 0;

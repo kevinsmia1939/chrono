@@ -17,6 +17,7 @@
 
 #include "chrono/core/ChDataPath.h"
 #include "chrono/physics/ChAssembly.h"
+#include "chrono/input_output/ChCheckpointBlock.h"
 #include "chrono/physics/ChSystem.h"
 
 namespace chrono {
@@ -61,6 +62,11 @@ ChAssembly::ChAssembly(const ChAssembly& other) : ChPhysicsItem(other) {
 }
 
 ChAssembly::~ChAssembly() {
+    // An assembly being destroyed is not part of a system that is still in use: either it was removed from its system,
+    // or it is the assembly of a system being destroyed, whose collision system and contact container may already be
+    // gone. Detach the items without touching the system.
+    system = nullptr;
+
     RemoveAllBodies();
     RemoveAllShafts();
     RemoveAllLinks();
@@ -135,7 +141,7 @@ void ChAssembly::AddBody(std::shared_ptr<ChBody> body) {
     body->SetSystem(system);
     bodylist.push_back(body);
 
-    ////system->is_initialized = false;  // Not needed, unless/until ChBody::SetupInitial does something
+    system->m_items_pending = true;
     system->is_updated = false;
 }
 
@@ -143,6 +149,8 @@ void ChAssembly::RemoveBody(std::shared_ptr<ChBody> body) {
     auto itr = std::find(std::begin(bodylist), std::end(bodylist), body);
     assert(itr != bodylist.end());
 
+    RemoveCollisionModels(*body);
+    RemoveContacts();
     bodylist.erase(itr);
     body->SetSystem(nullptr);
 
@@ -156,7 +164,7 @@ void ChAssembly::AddShaft(std::shared_ptr<ChShaft> shaft) {
     shaft->SetSystem(system);
     shaftlist.push_back(shaft);
 
-    ////system->is_initialized = false;  // Not needed, unless/until ChShaft::SetupInitial does something
+    system->m_items_pending = true;
     system->is_updated = false;
 }
 
@@ -164,6 +172,7 @@ void ChAssembly::RemoveShaft(std::shared_ptr<ChShaft> shaft) {
     auto itr = std::find(std::begin(shaftlist), std::end(shaftlist), shaft);
     assert(itr != shaftlist.end());
 
+    RemoveCollisionModels(*shaft);
     shaftlist.erase(itr);
     shaft->SetSystem(nullptr);
 
@@ -177,7 +186,7 @@ void ChAssembly::AddLink(std::shared_ptr<ChLinkBase> link) {
     link->SetSystem(system);
     linklist.push_back(link);
 
-    ////system->is_initialized = false;  // Not needed, unless/until ChLink::SetupInitial does something
+    system->m_items_pending = true;
     system->is_updated = false;
 }
 
@@ -185,6 +194,7 @@ void ChAssembly::RemoveLink(std::shared_ptr<ChLinkBase> link) {
     auto itr = std::find(std::begin(linklist), std::end(linklist), link);
     assert(itr != linklist.end());
 
+    RemoveCollisionModels(*link);
     linklist.erase(itr);
     link->SetSystem(nullptr);
 
@@ -198,7 +208,7 @@ void ChAssembly::AddMesh(std::shared_ptr<fea::ChMesh> mesh) {
     mesh->SetSystem(system);
     meshlist.push_back(mesh);
 
-    system->is_initialized = false;
+    system->m_items_pending = true;
     system->is_updated = false;
 }
 
@@ -206,6 +216,8 @@ void ChAssembly::RemoveMesh(std::shared_ptr<fea::ChMesh> mesh) {
     auto itr = std::find(std::begin(meshlist), std::end(meshlist), mesh);
     assert(itr != meshlist.end());
 
+    RemoveCollisionModels(*mesh);
+    RemoveContacts();
     meshlist.erase(itr);
     mesh->SetSystem(nullptr);
 
@@ -227,7 +239,7 @@ void ChAssembly::AddOtherPhysicsItem(std::shared_ptr<ChPhysicsItem> item) {
     item->SetSystem(system);
     otherphysicslist.push_back(item);
 
-    ////system->is_initialized = false;  // Not needed, unless/until ChPhysicsItem::SetupInitial does something
+    system->m_items_pending = true;
     system->is_updated = false;
 }
 
@@ -235,6 +247,8 @@ void ChAssembly::RemoveOtherPhysicsItem(std::shared_ptr<ChPhysicsItem> item) {
     auto itr = std::find(std::begin(otherphysicslist), std::end(otherphysicslist), item);
     assert(itr != otherphysicslist.end());
 
+    RemoveCollisionModels(*item);
+    RemoveContacts();
     otherphysicslist.erase(itr);
     item->SetSystem(nullptr);
 
@@ -270,7 +284,7 @@ void ChAssembly::Add(std::shared_ptr<ChPhysicsItem> item) {
 void ChAssembly::AddBatch(std::shared_ptr<ChPhysicsItem> item) {
     batch_to_insert.push_back(item);
 
-    system->is_initialized = false;  // Needed, as the list may include a ChMesh
+    // Items are initialized after they are moved to the assembly lists (see FlushBatch)
     system->is_updated = false;
 }
 
@@ -308,6 +322,12 @@ void ChAssembly::Remove(std::shared_ptr<ChPhysicsItem> item) {
 }
 
 void ChAssembly::RemoveAllBodies() {
+    // Unregister all items before detaching any, so that a failure does not leave detached items in the list
+    for (const auto& body : bodylist)
+        RemoveCollisionModels(*body);
+    if (!bodylist.empty())
+        RemoveContacts();
+
     for (auto& body : bodylist) {
         body->SetSystem(nullptr);
     }
@@ -318,6 +338,10 @@ void ChAssembly::RemoveAllBodies() {
 }
 
 void ChAssembly::RemoveAllShafts() {
+    // Unregister all items before detaching any, so that a failure does not leave detached items in the list
+    for (const auto& shaft : shaftlist)
+        RemoveCollisionModels(*shaft);
+
     for (auto& shaft : shaftlist) {
         shaft->SetSystem(nullptr);
     }
@@ -328,6 +352,10 @@ void ChAssembly::RemoveAllShafts() {
 }
 
 void ChAssembly::RemoveAllLinks() {
+    // Unregister all items before detaching any, so that a failure does not leave detached items in the list
+    for (const auto& link : linklist)
+        RemoveCollisionModels(*link);
+
     for (auto& link : linklist) {
         link->SetSystem(nullptr);
     }
@@ -339,6 +367,12 @@ void ChAssembly::RemoveAllLinks() {
 
 #ifdef CHRONO_FEA
 void ChAssembly::RemoveAllMeshes() {
+    // Unregister all items before detaching any, so that a failure does not leave detached items in the list
+    for (const auto& mesh : meshlist)
+        RemoveCollisionModels(*mesh);
+    if (!meshlist.empty())
+        RemoveContacts();
+
     for (auto& mesh : meshlist) {
         mesh->SetSystem(nullptr);
     }
@@ -350,6 +384,12 @@ void ChAssembly::RemoveAllMeshes() {
 #endif
 
 void ChAssembly::RemoveAllOtherPhysicsItems() {
+    // Unregister all items before detaching any, so that a failure does not leave detached items in the list
+    for (const auto& item : otherphysicslist)
+        RemoveCollisionModels(*item);
+    if (!otherphysicslist.empty())
+        RemoveContacts();
+
     for (auto& item : otherphysicslist) {
         item->SetSystem(nullptr);
     }
@@ -357,6 +397,16 @@ void ChAssembly::RemoveAllOtherPhysicsItems() {
 
     if (system)
         system->is_updated = false;
+}
+
+void ChAssembly::RemoveCollisionModels(const ChPhysicsItem& item) const {
+    if (system && system->GetCollisionSystem())
+        item.RemoveCollisionModelsFromSystem(system->GetCollisionSystem().get());
+}
+
+void ChAssembly::RemoveContacts() const {
+    if (system && system->GetContactContainer())
+        system->GetContactContainer()->RemoveAllContacts();
 }
 
 std::shared_ptr<ChBody> ChAssembly::SearchBody(const std::string& name) const {
@@ -517,24 +567,87 @@ void ChAssembly::SyncCollisionModels() {
 // -----------------------------------------------------------------------------
 // UPDATING ROUTINES
 
-void ChAssembly::SetupInitial() {
+void ChAssembly::InitializeChildren(InitPhase phase) {
     for (auto& body : bodylist) {
-        body->SetupInitial();
+        body->InitializePhase(phase);
     }
     for (auto& shaft : shaftlist) {
-        shaft->SetupInitial();
+        shaft->InitializePhase(phase);
     }
     for (auto& link : linklist) {
-        link->SetupInitial();
+        link->InitializePhase(phase);
     }
 #ifdef CHRONO_FEA
     for (auto& mesh : meshlist) {
-        mesh->SetupInitial();
+        mesh->InitializePhase(phase);
     }
 #endif
     for (auto& otherphysics : otherphysicslist) {
-        otherphysics->SetupInitial();
+        otherphysics->InitializePhase(phase);
     }
+}
+
+void ChAssembly::ResetInitialization() {
+    ChPhysicsItem::ResetInitialization();
+
+    for (auto& body : bodylist) {
+        body->ResetInitialization();
+    }
+    for (auto& shaft : shaftlist) {
+        shaft->ResetInitialization();
+    }
+    for (auto& link : linklist) {
+        link->ResetInitialization();
+    }
+#ifdef CHRONO_FEA
+    for (auto& mesh : meshlist) {
+        mesh->ResetInitialization();
+    }
+#endif
+    for (auto& otherphysics : otherphysicslist) {
+        otherphysics->ResetInitialization();
+    }
+}
+
+void ChAssembly::CollectItems(std::vector<ChPhysicsItem*>& items) const {
+    for (const auto& body : bodylist)
+        items.push_back(body.get());
+    for (const auto& shaft : shaftlist)
+        items.push_back(shaft.get());
+    for (const auto& link : linklist)
+        items.push_back(link.get());
+#ifdef CHRONO_FEA
+    for (const auto& mesh : meshlist)
+        items.push_back(mesh.get());
+#endif
+    for (const auto& item : otherphysicslist)
+        items.push_back(item.get());
+}
+
+bool ChAssembly::SupportsCheckpoint() const {
+    std::vector<ChPhysicsItem*> items;
+    CollectItems(items);
+    for (const auto item : items) {
+        if (!item->SupportsCheckpoint())
+            return false;
+    }
+    return true;
+}
+
+void ChAssembly::SaveInternalState(ChCheckpointWriter& writer) const {
+    ChPhysicsItem::SaveInternalState(writer);
+
+    std::vector<ChPhysicsItem*> items;
+    CollectItems(items);
+    writer.WriteIndexedBlocks(items.size(), [&items](size_t i, ChCheckpointWriter& block) { items[i]->SaveInternalState(block); });
+}
+
+void ChAssembly::LoadInternalState(ChCheckpointReader& reader) {
+    ChPhysicsItem::LoadInternalState(reader);
+
+    std::vector<ChPhysicsItem*> items;
+    CollectItems(items);
+    reader.ReadIndexedBlocks(items.size(), [&items](size_t i, ChCheckpointReader& block) { items[i]->LoadInternalState(block); });
 }
 
 // Count all bodies, links, meshes, and other physics items.

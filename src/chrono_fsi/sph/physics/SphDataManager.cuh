@@ -20,6 +20,7 @@
 #ifndef CH_FSI_DATA_MANAGER_H
 #define CH_FSI_DATA_MANAGER_H
 
+#include <utility>
 #include <vector>
 
 #include <thrust/device_vector.h>
@@ -271,36 +272,50 @@ struct FsiDataManager {
                     const std::vector<ChAABB>& ad_node2D,
                     NodeDirections node_directions_mode);
 
-    /// Find indices of all SPH particles inside the specified OBB.
-    std::vector<int> FindParticlesInBox(const Real3& hsize, const Real3& pos, const Real3& ax, const Real3& ay, const Real3& az);
+    /// Return the range [first, last) of indices of the markers in the specified group.
+    /// Markers are stored with SPH particles first, then BCE markers on fixed boundaries, then BCE markers on solids.
+    std::pair<size_t, size_t> GetMarkerRange(MarkerGroup group) const;
 
-    /// Extract positions of all markers (SPH and BCE).
-    std::vector<Real3> GetPositions();
+    /// Find indices of the markers in the specified group that are inside the specified OBB.
+    std::vector<int> FindParticlesInBox(MarkerGroup group, const Real3& hsize, const Real3& pos, const Real3& ax, const Real3& ay, const Real3& az);
 
-    /// Extract velocities of all markers (SPH and BCE).
-    std::vector<Real3> GetVelocities();
+    /// Extract positions of the markers in the specified group.
+    std::vector<Real3> GetPositions(MarkerGroup group);
 
-    /// Extract accelerations of all markers (SPH and BCE).
-    std::vector<Real3> GetAccelerations();
+    /// Extract velocities of the markers in the specified group.
+    std::vector<Real3> GetVelocities(MarkerGroup group);
 
-    /// Extract forces applied to all markers (SPH and BCE).
-    std::vector<Real3> GetForces();
+    /// Extract accelerations of the SPH particles in the specified group.
+    /// Zero is returned for all BCE markers; the accelerations of BCE markers on solids are calculated by SphBceManager.
+    std::vector<Real3> GetSphAccelerations(MarkerGroup group);
 
-    /// Extract fluid properties of all markers (SPH and BCE).
+    /// Extract fluid forces on the markers in the specified group.
+    /// Zero is returned for BCE markers on fixed boundaries, where the fluid force is not calculated.
+    std::vector<Real3> GetForces(MarkerGroup group);
+
+    /// Extract fluid properties of the markers in the specified group.
     /// For each SPH particle, the 3-dimensional vector contains density, pressure, and viscosity.
-    std::vector<Real3> GetProperties();
+    std::vector<Real3> GetProperties(MarkerGroup group);
 
-    /// Extract positions of all markers (SPH and BCE) with indices in the provided array.
+    /// Extract the diagonal stress components (xx, yy, zz) of the markers in the specified group (CRM only).
+    std::vector<Real3> GetStressDiagonal(MarkerGroup group);
+
+    /// Extract the off-diagonal stress components (xy, xz, yz) of the markers in the specified group (CRM only).
+    std::vector<Real3> GetStressOffDiagonal(MarkerGroup group);
+
+    /// Extract free-surface identification flags of the markers in the specified group.
+    /// A value of 1 marks an SPH particle at or near the free surface. Zero is reported for BCE markers and for SPH
+    /// particles that are not active, namely particles in the extended halo of an active domain and particles that
+    /// left the computational domain. Such particles have a truncated neighborhood by construction, so their
+    /// free-surface test is meaningless and would otherwise report a spurious surface along the active domain
+    /// boundary.
+    std::vector<int> GetFreeSurfaceFlags(MarkerGroup group);
+
+    /// Extract positions of the markers with the specified indices.
     std::vector<Real3> GetPositions(const std::vector<int>& indices);
 
-    /// Extract velocities of all markers (SPH and BCE) with indices in the provided array.
+    /// Extract velocities of the markers with the specified indices.
     std::vector<Real3> GetVelocities(const std::vector<int>& indices);
-
-    /// Extract accelerations of all markers (SPH and BCE) with indices in the provided array.
-    std::vector<Real3> GetAccelerations(const std::vector<int>& indices);
-
-    /// Extract forces applied to all markers (SPH and BCE) with indices in the provided array.
-    std::vector<Real3> GetForces(const std::vector<int>& indices);
 
     /// Extract FSI forces on rigid bodies.
     std::vector<Real3> GetRigidForces();
@@ -363,6 +378,8 @@ struct FsiDataManager {
     // FSI flex solid connectivity
     thrust::host_vector<int2> flex1D_Nodes_H;    ///< node indices for each 1-D flex segment (host)
     thrust::device_vector<int2> flex1D_Nodes_D;  ///< node indices for each 1-D flex segment (device)
+    thrust::host_vector<Real3> flex1D_Normals_H;    ///< reference normal for each 1-D flex segment (host)
+    thrust::device_vector<Real3> flex1D_Normals_D;  ///< reference normal for each 1-D flex segment (device)
     thrust::host_vector<int3> flex2D_Nodes_H;    ///< node indices for each 2-D flex face (host)
     thrust::device_vector<int3> flex2D_Nodes_D;  ///< node indices for each 2-D flex face (device)
 
@@ -372,7 +389,7 @@ struct FsiDataManager {
     thrust::device_vector<ActiveDomain> ad_body_D;    ///< body active domains (on device, expressed in absolute frame)
     thrust::host_vector<ActiveDomain> ad_node1D_H;    ///< 1-D mesh node active domains (on host, expressed in node frames)
     thrust::device_vector<ActiveDomain> ad_node1D_D;  ///< 1-D mesh node active domains (on device, expressed in absolute frame)
-    thrust::host_vector<ActiveDomain> ad_node2D_H;    ///< 2--D mesh node active domains (on host, expressed in node frames)
+    thrust::host_vector<ActiveDomain> ad_node2D_H;    ///< 2-D mesh node active domains (on host, expressed in node frames)
     thrust::device_vector<ActiveDomain> ad_node2D_D;  ///< 2-D mesh node active domains (on device, expressed in absolute frame)
 
     // FSI solid BCEs
@@ -381,7 +398,7 @@ struct FsiDataManager {
     thrust::host_vector<Real3> flex1D_BCEcoords_H;    ///< local coords for BCE markers on 1-D flex segments (host)
     thrust::device_vector<Real3> flex1D_BCEcoords_D;  ///< local coords for BCE markers on 1-D flex segments (device)
     thrust::host_vector<Real3> flex2D_BCEcoords_H;    ///< local coords for BCE markers on 2-D flex faces (host)
-    thrust::device_vector<Real3> flex2D_BCEcoords_D;  ///< local coors for BCE markers on 2-D flex faces (device)
+    thrust::device_vector<Real3> flex2D_BCEcoords_D;  ///< local coords for BCE markers on 2-D flex faces (device)
 
     thrust::host_vector<uint> rigid_BCEsolids_H;      ///< body ID for BCE markers on rigid bodies (host)
     thrust::device_vector<uint> rigid_BCEsolids_D;    ///< body ID for BCE markers on rigid bodies (device)
@@ -426,6 +443,7 @@ struct FsiDataManager {
     // List of all neighbors (indexed with information from numNeighborsPerPart)
     thrust::device_vector<uint> neighborList;    ///< neighbor list for all particles
     thrust::device_vector<uint> freeSurfaceIdD;  ///< identifiers for particles close to free surface
+    thrust::device_vector<Real> posDivergenceD;  ///< divergence of the position field (basis of the free-surface test)
 
     thrust::device_vector<Real> courantViscousTimeStepD;  ///< Courant time step for viscosity
     thrust::device_vector<Real> accelerationTimeStepD;    ///< Courant time step for acceleration - unsorted

@@ -12,7 +12,7 @@
 // Authors: Radu Serban
 // =============================================================================
 //
-// Demonstration of the single-wheel test rig.
+// Single-wheel test rig using Chrono::Vehicle wheel and tire.
 //
 // =============================================================================
 
@@ -29,7 +29,7 @@
 #include "chrono_vehicle/wheeled_vehicle/test_rig/ChWheelTestRig.h"
 #include "chrono_vehicle/wheeled_vehicle/tire/ChForceElementTire.h"
 #ifdef CHRONO_FEA
-    #include "chrono_vehicle/wheeled_vehicle/tire/ChDeformableTire.h"
+    #include "chrono_vehicle/wheeled_vehicle/tire/ChFEATire.h"
 #endif
 
 #include "chrono_vsg/ChVisualSystemVSG.h"
@@ -51,7 +51,6 @@ using std::endl;
 // -----------------------------------------------------------------------------
 
 // Terrain type (RIGID or SCM)
-enum class TerrainType { RIGID, SCM };
 ChWheelTestRig::TerrainType terrain_type = ChWheelTestRig::TerrainType::RIGID;
 
 // Tire specification file
@@ -71,6 +70,10 @@ std::string tire_json = "Polaris/Polaris_TMeasyTire.json";
 // Wheel specification file
 ////std::string wheel_json = "hmmwv/wheel/HMMWV_Wheel.json";
 std::string wheel_json = "Polaris/Polaris_Wheel.json";
+
+// Normal load (static wheel load, appropriate for the selected vehicle)
+double normal_load = 3000;  // Polaris
+////double normal_load = 6500;  // HMMWV
 
 double render_fps = 120;
 bool debug_output = false;
@@ -93,8 +96,9 @@ int main() {
     fea_tire = std::dynamic_pointer_cast<ChDeformableTire>(tire) != nullptr;
 #endif
 
-    if (handling_tire && terrain_type == ChWheelTestRig::TerrainType::SCM) {
-        cerr << "ERROR: Handling tire models cannot be used with SCM terrain." << endl;
+    // Handling tires have no collision geometry and cannot interact with deformable terrain
+    if (handling_tire && terrain_type != ChWheelTestRig::TerrainType::RIGID) {
+        cerr << "ERROR: Handling tire models can only be used with rigid terrain." << endl;
         return 1;
     }
 
@@ -156,16 +160,15 @@ int main() {
 
     sys->SetNumThreads(num_threads_chrono, num_threads_collision, num_threads_eigen);
     SetChronoSolver(*sys, solver_type, integrator_type, num_threads_pardiso);
-    tire->SetStepsize(step_size);
 
     // -----------------------------
     // Create and configure test rig
     // -----------------------------
 
-    ChWheelTestRig rig(wheel, tire, *sys);
+    ChWheelTestRig rig(*sys, wheel, tire);
 
     rig.SetGravitationalAcceleration(9.8);
-    rig.SetNormalLoad(3000);
+    rig.SetNormalLoad(normal_load);
 
     ////rig.SetCamberAngle(+15 * CH_DEG_TO_RAD);
 
@@ -178,9 +181,9 @@ int main() {
 
     if (terrain_type == ChWheelTestRig::TerrainType::RIGID) {
         ChWheelTestRig::TerrainParamsRigid params;
-        params.friction = 0.8f;
-        params.restitution = 0;
-        params.Young_modulus = 2e7f;
+        params.mu = 0.8f;
+        params.cr = 0;
+        params.Y = 2e7f;
 
         rig.SetTerrainRigid(size, params);
     } else {
@@ -201,17 +204,14 @@ int main() {
     // -----------------
 
     // Scenario: driven wheel
-    ////rig.SetAngSpeedFunction(chrono_types::make_shared<ChFunctionConst>(10.0));
-    ////rig.Initialize();
+    ////rig.SetAngSpeedFunction(chrono_types::make_shared<ChFunctionConst>(60.0 * CH_RPM_TO_RAD_S));
 
     // Scenario: pulled wheel
     ////rig.SetLongSpeedFunction(chrono_types::make_shared<ChFunctionConst>(1.0));
-    ////rig.Initialize();
 
     // Scenario: imobilized wheel
     ////rig.SetLongSpeedFunction(chrono_types::make_shared<ChFunctionConst>(0.0));
     ////rig.SetAngSpeedFunction(chrono_types::make_shared<ChFunctionConst>(0.0));
-    ////rig.Initialize();
 
     // Scenario: prescribe all motion functions
     //   longitudinal speed: 0.2 m/s
@@ -235,7 +235,7 @@ int main() {
 
 #ifdef CHRONO_FEA
     // Optionally, modify tire visualization (can be done only after initialization)
-    if (auto tire_def = std::dynamic_pointer_cast<ChDeformableTire>(tire)) {
+    if (auto tire_def = std::dynamic_pointer_cast<ChFEATire>(tire)) {
         auto visFEA = chrono_types::make_shared<ChVisualShapeFEA>();
         visFEA->SetFEMdataType(ChVisualShapeFEA::DataType::NODE_SPEED_NORM);
         visFEA->SetShellResolution(3);
@@ -312,12 +312,9 @@ int main() {
         time = sys->GetChTime();
 
         if (time >= render_frame / render_fps) {
-            auto& loc = rig.GetPos();
-            vis->UpdateCamera(loc + ChVector3d(1.0, 2.5, 0.5), loc + ChVector3d(0, 0.25, -0.25));
-
-            vis->BeginScene();
+            auto loc = rig.GetWheelPos();
+            vis->UpdateCamera(loc + ChVector3d(2.0, 2.5, 1.0), loc + ChVector3d(0, 0.25, -0.25));
             vis->Render();
-            vis->EndScene();
 
 #ifdef CHRONO_POSTPROCESS
             if (blender_output)
@@ -327,6 +324,12 @@ int main() {
 
         rig.Advance(step_size);
         sim_time += sys->GetTimerStep();
+
+        // End the simulation when the wheel reaches the end of the terrain patch
+        if (rig.PatchEndReached()) {
+            cout << "\nEnd of terrain patch reached at t = " << sys->GetChTime() << endl;
+            break;
+        }
 
         auto long_slip = rig.GetLongitudinalSlip();
         auto slip_angle = rig.GetSlipAngle() * CH_RAD_TO_DEG;

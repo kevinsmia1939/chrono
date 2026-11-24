@@ -20,7 +20,7 @@
 
 #include <cmath>
 #include <stdexcept>
-#include <thread>
+#include <future>
 #include <filesystem>
 
 #include "chrono/core/ChTypes.h"
@@ -46,9 +46,14 @@ ChFsiSystem::ChFsiSystem(ChSystem* sysMBS, ChFsiFluidSystem* sysCFD)
       m_fsi_interface(nullptr),
       m_is_initialized(false),
       m_verbose(true),
+      m_gravity(VNULL),
+      m_gravity_set(false),
+      m_frame_acc_dir(VECT_X),
+      m_frame_acc(nullptr),
       m_step_MBD(-1),
       m_step_CFD(-1),
       m_time(0),
+      m_coupling(CouplingScheme::SEQUENTIAL),
       m_RTF(-1),
       m_ratio_MBD(-1) {}
 
@@ -107,10 +112,31 @@ void ChFsiSystem::SetStepSizeCFD(double step) {
 }
 
 void ChFsiSystem::SetGravitationalAcceleration(const ChVector3d& gravity) {
+    m_gravity = gravity;
+    m_gravity_set = true;
     if (m_sysCFD)
         m_sysCFD->SetGravitationalAcceleration(gravity);
     if (m_sysMBS)
         m_sysMBS->SetGravitationalAcceleration(gravity);
+}
+
+void ChFsiSystem::SetFrameAcceleration(const ChVector3d& direction, std::shared_ptr<ChFunction> acceleration) {
+    ChAssertAlways(direction.Length() > 0);
+    m_frame_acc_dir = direction.GetNormalized();
+    m_frame_acc = acceleration;
+}
+
+void ChFsiSystem::ApplyFrameAcceleration(double time) {
+    // Use the multibody gravity as the gravitational acceleration, if never set explicitly; this is done at the first
+    // call, before any effective gravity is set
+    if (!m_gravity_set) {
+        m_gravity = m_sysMBS->GetGravitationalAcceleration();
+        m_gravity_set = true;
+    }
+
+    ChVector3d gravity = m_gravity - m_frame_acc->GetVal(time) * m_frame_acc_dir;
+    m_sysCFD->SetGravitationalAcceleration(gravity);
+    m_sysMBS->SetGravitationalAcceleration(gravity);
 }
 
 std::shared_ptr<FsiBody> ChFsiSystem::AddRigidBody(std::shared_ptr<ChBody> body, std::shared_ptr<ChBodyGeometry> geometry, bool check_embedded) {
@@ -131,16 +157,11 @@ void ChFsiSystem::UseNodeDirections(NodeDirectionsMode mode) {
 }
 
 std::shared_ptr<FsiMesh1D> ChFsiSystem::AddFeaMesh1D(std::shared_ptr<fea::ChMesh> mesh, bool check_embedded) {
-    ChAssertAlways(m_fsi_interface);
-
     // Search for contact surfaces associated with the FEA mesh
     for (const auto& surface : mesh->GetContactSurfaces()) {
         if (auto surface_segs = std::dynamic_pointer_cast<fea::ChContactSurfaceSegmentSet>(surface)) {
-            if (surface_segs->GetNumSegments() > 0) {
-                auto fsi_mesh1D = m_fsi_interface->AddFeaMesh1D(surface_segs, check_embedded);
-                m_sysCFD->OnAddFeaMesh1D(fsi_mesh1D, check_embedded);
-                return fsi_mesh1D;
-            }
+            if (!surface_segs->GetSegmentsXYZ().empty())
+                return AddFeaMesh1D(surface_segs, check_embedded);
         }
     }
 
@@ -149,27 +170,17 @@ std::shared_ptr<FsiMesh1D> ChFsiSystem::AddFeaMesh1D(std::shared_ptr<fea::ChMesh
     ChContactMaterialData contact_material_data;
     auto surface_segs = chrono_types::make_shared<fea::ChContactSurfaceSegmentSet>(contact_material_data.CreateMaterial(ChContactMethod::SMC));
     surface_segs->AddAllSegments(*mesh, 0);
-    if (surface_segs->GetNumSegments() > 0) {
-        auto fsi_mesh1D = m_fsi_interface->AddFeaMesh1D(surface_segs, check_embedded);
-        m_sysCFD->OnAddFeaMesh1D(fsi_mesh1D, check_embedded);
-        return fsi_mesh1D;
-    }
 
-    // The FEA mesh contains no 1D elements (cable or beam)
-    return nullptr;
+    // Return an empty pointer if the FEA mesh contains no 1D elements (cable or beam)
+    return AddFeaMesh1D(surface_segs, check_embedded);
 }
 
 std::shared_ptr<FsiMesh2D> ChFsiSystem::AddFeaMesh2D(std::shared_ptr<fea::ChMesh> mesh, bool check_embedded) {
-    ChAssertAlways(m_fsi_interface);
-
     // Search for contact surfaces associated with the FEA mesh
     for (const auto& surface : mesh->GetContactSurfaces()) {
         if (auto surface_mesh = std::dynamic_pointer_cast<fea::ChContactSurfaceMesh>(surface)) {
-            if (surface_mesh->GetNumTriangles() > 0) {
-                auto fsi_mesh2D = m_fsi_interface->AddFeaMesh2D(surface_mesh, check_embedded);
-                m_sysCFD->OnAddFeaMesh2D(fsi_mesh2D, check_embedded);
-                return fsi_mesh2D;
-            }
+            if (!surface_mesh->GetTrianglesXYZ().empty())
+                return AddFeaMesh2D(surface_mesh, check_embedded);
         }
     }
 
@@ -178,14 +189,33 @@ std::shared_ptr<FsiMesh2D> ChFsiSystem::AddFeaMesh2D(std::shared_ptr<fea::ChMesh
     ChContactMaterialData contact_material_data;
     auto surface_mesh = chrono_types::make_shared<fea::ChContactSurfaceMesh>(contact_material_data.CreateMaterial(ChContactMethod::SMC));
     surface_mesh->AddFacesFromBoundary(*mesh, 0, true, false, false);  // do not include cable and beam elements
-    if (surface_mesh->GetNumTriangles() > 0) {
-        auto fsi_mesh2D = m_fsi_interface->AddFeaMesh2D(surface_mesh, check_embedded);
-        m_sysCFD->OnAddFeaMesh2D(fsi_mesh2D, check_embedded);
-        return fsi_mesh2D;
-    }
 
-    // The FEA mesh contains no 2D elements (shell or solid)
-    return nullptr;
+    // Return an empty pointer if the FEA mesh contains no 2D elements (shell or solid)
+    return AddFeaMesh2D(surface_mesh, check_embedded);
+}
+
+std::shared_ptr<FsiMesh1D> ChFsiSystem::AddFeaMesh1D(std::shared_ptr<fea::ChContactSurfaceSegmentSet> surface, bool check_embedded) {
+    ChAssertAlways(m_fsi_interface);
+
+    // Only segments with XYZ nodes are coupled
+    if (!surface || surface->GetSegmentsXYZ().empty())
+        return nullptr;
+
+    auto fsi_mesh1D = m_fsi_interface->AddFeaMesh1D(surface, check_embedded);
+    m_sysCFD->OnAddFeaMesh1D(fsi_mesh1D, check_embedded);
+    return fsi_mesh1D;
+}
+
+std::shared_ptr<FsiMesh2D> ChFsiSystem::AddFeaMesh2D(std::shared_ptr<fea::ChContactSurfaceMesh> surface, bool check_embedded) {
+    ChAssertAlways(m_fsi_interface);
+
+    // Only triangles with XYZ nodes are coupled
+    if (!surface || surface->GetTrianglesXYZ().empty())
+        return nullptr;
+
+    auto fsi_mesh2D = m_fsi_interface->AddFeaMesh2D(surface, check_embedded);
+    m_sysCFD->OnAddFeaMesh2D(fsi_mesh2D, check_embedded);
+    return fsi_mesh2D;
 }
 
 #endif
@@ -228,8 +258,7 @@ void ChFsiSystem::Initialize() {
     m_sysCFD->Initialize(body_states);
 #endif
 
-    // Mark systems as initialized
-    m_sysCFD->m_is_initialized = true;
+    // Mark as initialized
     m_is_initialized = true;
 }
 
@@ -289,29 +318,64 @@ void ChFsiSystem::DoStepDynamics(double step) {
     m_timer_step.reset();
     m_timer_FSI.reset();
 
-    // Advance dynamics of the two phases.
-    //   1. Advance the dynamics of the multibody system in a concurrent thread (does not block execution)
-    //   2. Advance the dynamics of the fluid system (in the main thread)
-    //   3. Wait for the MBS thread to finish execution.
-    m_timer_step.start();
-    std::thread th(&ChFsiSystem::AdvanceMBS, this, step, threshold_MBD);
-    AdvanceCFD(step, threshold_CFD);
-    th.join();
-    m_timer_step.stop();
+    // With a prescribed frame acceleration, set the effective gravity for this step
+    if (m_frame_acc)
+        ApplyFrameAcceleration(m_time);
 
-    // Data exchange between phases:
-    //   1. [CFD -> MBS] Apply fluid forces and torques on FSI solids
-    //   2. [MBS -> CFD] Load new solid phase states
-    m_timer_FSI.start();
-    m_sysCFD->OnExchangeSolidForces();
-    m_fsi_interface->ExchangeSolidForces();
-    m_fsi_interface->ExchangeSolidStates();
-    m_sysCFD->OnExchangeSolidStates();
-    m_timer_FSI.stop();
+    if (m_coupling == CouplingScheme::CONCURRENT) {
+        // Advance dynamics of the two phases.
+        //   1. Advance the dynamics of the multibody system in a concurrent thread (does not block execution)
+        //   2. Advance the dynamics of the fluid system (in the main thread)
+        //   3. Wait for the MBS thread to finish execution.
+        // Note that the fluid forces applied to the MBS over this step were evaluated from the solid states loaded
+        // at the *previous* data exchange point.
+        // An exception thrown by either phase propagates to the caller. If the fluid step throws, the destructor of
+        // the future still waits for the MBS thread to finish; if the MBS step throws, get() rethrows its exception.
+        m_timer_step.start();
+        auto mbs = std::async(std::launch::async, &ChFsiSystem::AdvanceMBS, this, step, threshold_MBD);
+        AdvanceCFD(step, threshold_CFD);
+        mbs.get();
+        m_timer_step.stop();
+
+        // Data exchange between phases:
+        //   1. [CFD -> MBS] Apply fluid forces and torques on FSI solids
+        //   2. [MBS -> CFD] Load new solid phase states
+        m_timer_FSI.start();
+        m_sysCFD->OnExchangeSolidForces();
+        m_fsi_interface->ExchangeSolidForces();
+        m_fsi_interface->ExchangeSolidStates();
+        m_sysCFD->OnExchangeSolidStates();
+        m_timer_FSI.stop();
+    } else {
+        // Advance the dynamics of the two phases serially, exchanging data such that the fluid forces applied to the
+        // MBS over this step are evaluated from the solid states at the beginning of this step.
+        m_timer_step.start();
+
+        // [MBS -> CFD] Load solid phase states at the beginning of the step
+        m_timer_FSI.start();
+        m_fsi_interface->ExchangeSolidStates();
+        m_sysCFD->OnExchangeSolidStates();
+        m_timer_FSI.stop();
+
+        // Advance the dynamics of the fluid system, using the solid states just loaded
+        AdvanceCFD(step, threshold_CFD);
+
+        // [CFD -> MBS] Apply the fluid forces and torques that act on the FSI solids over this step
+        m_timer_FSI.start();
+        m_sysCFD->OnExchangeSolidForces();
+        m_fsi_interface->ExchangeSolidForces();
+        m_timer_FSI.stop();
+
+        // Advance the dynamics of the multibody system, with those forces held constant over the step
+        AdvanceMBS(step, threshold_MBD);
+
+        m_timer_step.stop();
+    }
 
     // Calculate RTF and MBD/CFD timer ratio
     m_RTF = m_timer_step() / step;
-    m_ratio_MBD = m_timer_MBD / m_timer_CFD;
+    if (m_timer_CFD > 0)
+        m_ratio_MBD = m_timer_MBD / m_timer_CFD;
 
     // Update simulation time
     m_time += step;

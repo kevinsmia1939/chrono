@@ -103,9 +103,14 @@ class CH_FSI_API ChFsiFluidSystemSPH : public ChFsiFluidSystem {
         double shifting_ppst_push;                     ///< PPST pushing coefficient (default: 3.0)
         double shifting_ppst_pull;                     ///< shifting beta coefficient (default: 1.0)
         double shifting_beta_implicit;                 ///< shifting coefficient used in implicit solver (default: 1.0)
-        double shifting_diffusion_A;                   ///< shifting coefficient used in diffusion (default: 1.0, range 1 to 6)
-        double shifting_diffusion_AFSM;                ///< shifting coefficient used in diffusion (default: 3.0)
-        double shifting_diffusion_AFST;                ///< shifting coefficient used in diffusion (default: 2.0)
+        double shifting_diffusion_A;                   ///< Fickian shifting coefficient, scaling the shifting velocity driven by
+                                                       ///< the discrete gradient of particle concentration (default: 1.0, range 1 to 6)
+        double shifting_diffusion_AFSM;                ///< upper anchor of the free-surface taper on diffusion shifting: particles
+                                                       ///< whose position-field divergence reaches AFSM get the full shift, and
+                                                       ///< between AFST and AFSM the shift ramps linearly (default: 2.9)
+        double shifting_diffusion_AFST;                ///< lower anchor of the free-surface taper on diffusion shifting: particles
+                                                       ///< whose position-field divergence is at or below AFST are not shifted
+                                                       ///< (default: 2.0)
         double min_distance_coefficient;               ///< min inter-particle distance as fraction of kernel radius (default: 0.01)
         int density_reinit_steps;                      ///< number of steps between density re-initializations (default: 2e8)
         bool use_density_based_projection;             ///< (ISPH only, default: false)
@@ -116,8 +121,10 @@ class CH_FSI_API ChFsiFluidSystemSPH : public ChFsiFluidSystem {
         double delta_sph_coefficient;                  ///< delta SPH coefficient (default: 0.1)
         double free_surface_threshold;                 ///< threshold for identifying free surface. The divergence of the position
                                                        ///< field is computed and compared to this threshold. Particles with divergence
-                                                       ///< less than this threshold are considered free surface particles (CRM only,
-                                                       ///< default: 2.0)
+                                                       ///< less than this threshold are considered free surface particles. Evaluated
+                                                       ///< for both CFD and CRM problems, but currently only the CRM solution consumes
+                                                       ///< the result (the stress state is zeroed at flagged particles);
+                                                       ///< default: 2.4
         int num_proximity_search_steps;                ///< number of steps between updates to neighbor lists (default: 1)
         bool use_variable_time_step;                   ///< use variable time step (default: false)
 
@@ -165,6 +172,8 @@ class CH_FSI_API ChFsiFluidSystemSPH : public ChFsiFluidSystem {
     /// Set computational domain and boundary conditions on its sides.
     /// `bc_type` indicates the types of BCs imposed in the three directions of the computational domain.
     /// By default, no special boundary conditions are imposed in any direction (BCType::NONE).
+    /// A periodic direction of the domain must be at least 3 kernel support radii long, and any other direction at least 1.
+    /// Initialize() throws for a shorter domain.
     /// \note After Initialize(), only a pure TRANSLATION of the domain is accepted
     /// (same extents; the 2-argument overload additionally requires unchanged BC
     /// types); the update propagates to the device (used by the CRMTerrain moving
@@ -215,6 +224,12 @@ class CH_FSI_API ChFsiFluidSystemSPH : public ChFsiFluidSystem {
     /// Set (initial) density.
     void SetDensity(double rho0);
 
+    /// Set the base pressure added to the pressure from the Tait equation of state (default: 0).
+    /// A positive base pressure keeps the pressure positive where the fluid is in tension, which prevents tensile
+    /// instability (particle clumping, particles pulled into walls) in confined flows. Use with care for flows with a
+    /// free surface, where it pushes the free-surface particles outward.
+    void SetBasePressure(double base_pressure);
+
     /// Set the PPST Shifting parameters.
     /// - `push`: coefficient for the pushing term in the PPST shifting method (upon penetration with fictitious sphere)
     /// - `pull`: coefficient for the pulling term in the PPST shifting method
@@ -232,7 +247,10 @@ class CH_FSI_API ChFsiFluidSystemSPH : public ChFsiFluidSystem {
     /// Set prescribed initial pressure for gravity field.
     void SetInitPressure(const double fzDim);
 
-    /// Set gravity for the FSI system.
+    /// Set gravity for the SPH fluid system.
+    /// This function can also be called after initialization, for example to apply the inertial (fictitious) force of a
+    /// translating, non-inertial reference frame: in a frame with acceleration a, use an effective gravity g - a. Unlike a
+    /// body force (see SetBodyForce), gravity is also included in the extrapolation of the BCE marker pressure.
     virtual void SetGravitationalAcceleration(const ChVector3d& gravity) override;
 
     /// Set a constant force applied to the fluid.
@@ -354,21 +372,40 @@ class CH_FSI_API ChFsiFluidSystemSPH : public ChFsiFluidSystem {
     /// Get the current total number of FEA mesh BCE markers.
     size_t GetNumFleaMeshMarkers() const;
 
-    /// Return the SPH particle positions.
-    std::vector<ChVector3d> GetParticlePositions() const;
+    /// Return the positions of the markers in the specified group.
+    /// See MarkerGroup for the order of the returned markers; all marker getters use the same order.
+    std::vector<ChVector3d> GetParticlePositions(MarkerGroup group = MarkerGroup::ALL) const;
 
-    /// Return the SPH particle velocities.
-    std::vector<ChVector3d> GetParticleVelocities() const;
+    /// Return the velocities of the markers in the specified group.
+    /// BCE markers move with their fixed boundary or solid.
+    std::vector<ChVector3d> GetParticleVelocities(MarkerGroup group = MarkerGroup::ALL) const;
 
-    /// Return the accelerations of SPH particles.
-    std::vector<ChVector3d> GetParticleAccelerations() const;
+    /// Return the accelerations of the markers in the specified group.
+    /// For an SPH particle, this is the force on the particle divided by its mass. A BCE marker on a solid moves with
+    /// that solid, so its acceleration is the acceleration of the solid at the marker location (not the fluid force on
+    /// the marker divided by its mass). BCE markers on fixed boundaries have zero acceleration.
+    std::vector<ChVector3d> GetParticleAccelerations(MarkerGroup group = MarkerGroup::ALL) const;
 
-    /// Return the forces acting on SPH particles.
-    std::vector<ChVector3d> GetParticleForces() const;
+    /// Return the forces on the markers in the specified group.
+    /// For an SPH particle, this is the total force on the particle. For a BCE marker on a solid, this is the fluid
+    /// force on that marker; summed over the BCE markers of a solid, these give the fluid force on the solid. The fluid
+    /// force on BCE markers of fixed boundaries is not calculated, and is reported as zero.
+    std::vector<ChVector3d> GetParticleForces(MarkerGroup group = MarkerGroup::ALL) const;
 
-    /// Return the SPH particle fluid properties.
-    /// For each SPH particle, the 3-dimensional vector contains density, pressure, and viscosity.
-    std::vector<ChVector3d> GetParticleFluidProperties() const;
+    /// Return the fluid properties of the markers in the specified group.
+    /// For each marker, the 3-dimensional vector contains density, pressure, and viscosity.
+    std::vector<ChVector3d> GetParticleFluidProperties(MarkerGroup group = MarkerGroup::ALL) const;
+
+    /// Return the diagonal stress components (xx, yy, zz) of the markers in the specified group (CRM only).
+    /// These are components of the Cauchy stress in the global frame; normal stress is positive in tension. For a BCE
+    /// marker, this is the stress that the boundary condition extrapolated from the neighboring SPH particles during the
+    /// last step, or zero if the marker had no SPH neighbors.
+    std::vector<ChVector3d> GetParticleStressDiagonal(MarkerGroup group = MarkerGroup::ALL) const;
+
+    /// Return the off-diagonal stress components (xy, xz, yz) of the markers in the specified group (CRM only).
+    /// A positive xy component is a traction along +x on a face with normal +y. BCE markers are treated as in
+    /// GetParticleStressDiagonal.
+    std::vector<ChVector3d> GetParticleStressOffDiagonal(MarkerGroup group = MarkerGroup::ALL) const;
 
     /// Return the boundary treatment type.
     BoundaryMethod GetBoundaryType() const { return m_paramsH->boundary_method; }
@@ -468,42 +505,61 @@ class CH_FSI_API ChFsiFluidSystemSPH : public ChFsiFluidSystem {
 
     // ----------- Utility functions for extracting information at specific SPH particles
 
-    /// Utility function for finding indices of SPH particles inside a given OBB.
+    /// Find indices of the markers in the specified group that are inside a given OBB.
     /// The object-oriented box, of specified size, is assumed centered at the origin of the provided frame and aligned
-    /// with the axes of that frame.
-    std::vector<int> FindParticlesInBox(const ChFrame<>& frame, const ChVector3d& size);
+    /// with the axes of that frame. The indices refer to the marker order for MarkerGroup::ALL, as expected by the
+    /// marker getters that take an array of indices.
+    std::vector<int> FindParticlesInBox(const ChFrame<>& frame, const ChVector3d& size, MarkerGroup group = MarkerGroup::ALL);
 
-    /// Extract positions of all markers (SPH and BCE).
-    std::vector<Real3> GetPositions() const;
+    /// Extract positions of the markers in the specified group.
+    std::vector<Real3> GetPositions(MarkerGroup group = MarkerGroup::ALL) const;
 
     /// Return a device-resident view of all marker positions.
     /// This accessor does not copy marker data to the host. The returned device pointer remains owned by this SPH system
     /// and is valid until marker storage is resized or the SPH system is destroyed.
     ChFsiSphMarkerDeviceView GetMarkerDeviceView() const;
 
-    /// Extract velocities of all markers (SPH and BCE).
-    std::vector<Real3> GetVelocities() const;
+    /// Extract velocities of the markers in the specified group.
+    std::vector<Real3> GetVelocities(MarkerGroup group = MarkerGroup::ALL) const;
 
-    /// Extract accelerations of all markers (SPH and BCE).
-    std::vector<Real3> GetAccelerations() const;
+    /// Extract accelerations of the markers in the specified group.
+    /// See GetParticleAccelerations for the accelerations reported for BCE markers.
+    std::vector<Real3> GetAccelerations(MarkerGroup group = MarkerGroup::ALL) const;
 
-    /// Extract forces applied to all markers (SPH and BCE).
-    std::vector<Real3> GetForces() const;
+    /// Extract forces on the markers in the specified group.
+    /// See GetParticleForces for the forces reported for BCE markers.
+    std::vector<Real3> GetForces(MarkerGroup group = MarkerGroup::ALL) const;
 
-    /// Extract fluid properties of all markers (SPH and BCE).
-    /// For each SPH particle, the 3-dimensional vector contains density, pressure, and viscosity.
-    std::vector<Real3> GetProperties() const;
+    /// Extract fluid properties of the markers in the specified group.
+    /// For each marker, the 3-dimensional vector contains density, pressure, and viscosity.
+    std::vector<Real3> GetProperties(MarkerGroup group = MarkerGroup::ALL) const;
 
-    /// Extract positions of all markers (SPH and BCE) with indices in the provided array.
+    /// Extract free-surface identification flags of the markers in the specified group.
+    /// The flags are returned in the same marker order as GetPositions() for the same group, so the two can be indexed
+    /// together to extract the free surface. A value of 1 marks an SPH particle at or near the free surface, as determined by
+    /// comparing the divergence of the position field against ChFsiParamsSPH::free_surface_threshold. Note that a
+    /// particle adjacent to a solid is not flagged: BCE markers contribute to that divergence, so they complete the
+    /// kernel support of the particles next to them.
+    /// Zero is reported for BCE markers and for SPH particles that are not active, namely particles in the extended
+    /// halo of an active domain and particles that left the computational domain. Such particles have a truncated
+    /// neighborhood by construction, so their free-surface test is meaningless and would otherwise report a spurious
+    /// surface along the active domain boundary.
+    std::vector<int> GetFreeSurfaceFlags(MarkerGroup group = MarkerGroup::ALL) const;
+
+    /// Extract positions of the markers with the specified indices.
+    /// The indices refer to the marker order for MarkerGroup::ALL (see FindParticlesInBox).
     std::vector<Real3> GetPositions(const std::vector<int>& indices) const;
 
-    /// Extract velocities of all markers (SPH and BCE) with indices in the provided array.
+    /// Extract velocities of the markers with the specified indices.
+    /// The indices refer to the marker order for MarkerGroup::ALL (see FindParticlesInBox).
     std::vector<Real3> GetVelocities(const std::vector<int>& indices) const;
 
-    /// Extract accelerations of all markers (SPH and BCE) with indices in the provided array.
+    /// Extract accelerations of the markers with the specified indices.
+    /// The indices refer to the marker order for MarkerGroup::ALL (see FindParticlesInBox).
     std::vector<Real3> GetAccelerations(const std::vector<int>& indices) const;
 
-    /// Extract forces applied to all markers (SPH and BCE) with indices in the provided array.
+    /// Extract forces on the markers with the specified indices.
+    /// The indices refer to the marker order for MarkerGroup::ALL (see FindParticlesInBox).
     std::vector<Real3> GetForces(const std::vector<int>& indices) const;
 
     // ----------- Utility functions for creating points in various volumes
@@ -551,26 +607,26 @@ class CH_FSI_API ChFsiFluidSystemSPH : public ChFsiFluidSystem {
     std::vector<ChVector3d> CreatePointsCylinderExterior(double rad, double height, bool polar) const;
 
     /// Create interior marker points for a cone of specified radius and height.
-    /// The cone is assumed centered at the origin and aligned with the Z axis.
+    /// The cone is aligned with the Z axis, with its base centered at the origin and its tip at z = height.
     /// Markers are created inside the cone, in a number of layers corresponding to system parameters.
     /// Markers are created using cylindrical coordinates (polar=true), or else on a uniform Cartesian grid.
     std::vector<ChVector3d> CreatePointsConeInterior(double rad, double height, bool polar) const;
 
     /// Create interior marker points for a truncated cone of specified radius and height.
-    /// The truncated cone is assumed centered at the origin and aligned with the Z axis.
+    /// The truncated cone is aligned with the Z axis, with its base centered at the origin and its tip at z = height.
     /// Markers are created inside the truncated cone, in a number of layers corresponding to system parameters.
     /// Markers are created using cylindrical coordinates (polar=true), or else on a uniform Cartesian grid.
     /// The base of the truncated cone has a radius of rad, and the tip has a radius of rad_tip.
     std::vector<ChVector3d> CreatePointsTruncatedConeInterior(double rad, double rad_tip, double height, bool polar) const;
 
     /// Create exterior marker points for a cone of specified radius and height.
-    /// The cone is assumed centered at the origin and aligned with the Z axis.
+    /// The cone is aligned with the Z axis, with its base centered at the origin and its tip at z = height.
     /// Markers are created outside the cone, in a number of layers corresponding to system parameters.
     /// Markers are created using cylindrical coordinates (polar=true), or else on a uniform Cartesian grid.
     std::vector<ChVector3d> CreatePointsConeExterior(double rad, double height, bool polar) const;
 
     /// Create exterior marker points for a truncated cone of specified radius and height.
-    /// The truncated cone is assumed centered at the origin and aligned with the Z axis.
+    /// The truncated cone is aligned with the Z axis, with its base centered at the origin and its tip at z = height.
     /// Markers are created outside the truncated cone, in a number of layers corresponding to system parameters.
     /// Markers are created using cylindrical coordinates (polar=true), or else on a uniform Cartesian grid.
     /// The base of the truncated cone has a radius of rad, and the tip has a radius of rad_tip.
@@ -648,6 +704,7 @@ class CH_FSI_API ChFsiFluidSystemSPH : public ChFsiFluidSystem {
 
   private:
     /// Derive the domain-dependent grid quantities from the current computational domain.
+    /// Throws if the domain is too short along an axis for the neighbor-search grid.
     void DeriveDomainGridQuantities();
 
     /// Apply a post-initialization computational-domain update (translation only) and
@@ -768,7 +825,7 @@ class CH_FSI_API ChFsiFluidSystemSPH : public ChFsiFluidSystem {
 
     unsigned int m_num_rigid_bodies;     ///< number of rigid bodies
     unsigned int m_num_flex1D_meshes;    ///< number of 1-D flexible meshes
-    unsigned int m_num_flex2D_meshes;    ///< number of 1-D flexible meshes
+    unsigned int m_num_flex2D_meshes;    ///< number of 2-D flexible meshes
     unsigned int m_num_flex1D_nodes;     ///< number of 1-D flexible nodes (across all 1-D meshes)
     unsigned int m_num_flex2D_nodes;     ///< number of 2-D flexible nodes (across all 2-D meshes)
     unsigned int m_num_flex1D_elements;  ///< number of 1-D flexible segments (across all 1-D meshes)
@@ -817,6 +874,7 @@ class CH_FSI_API DepthPressurePropertiesCallback : public ChFsiFluidSystemSPH::P
 
         p0 = sysSPH.GetDensity() * gz * (zero_height - pos.z());
         rho0 = sysSPH.GetDensity() + p0 / c2;
+        p0 += sysSPH.GetBasePressure();
         mu0 = sysSPH.GetViscosity();
         v0 = init_vel;
 

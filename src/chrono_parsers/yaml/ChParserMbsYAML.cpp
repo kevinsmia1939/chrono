@@ -84,11 +84,11 @@ using std::endl;
 namespace chrono {
 namespace parsers {
 
-ChParserMbsYAML::ChParserMbsYAML(bool verbose) : ChParserYAML(), m_loaded(false), m_solver_loaded(false), m_model_loaded(false), m_crt_instance(-1) {
+ChParserMbsYAML::ChParserMbsYAML(bool verbose) : ChParserYAML(), m_loaded(false), m_solver_loaded(false), m_model_loaded(false), m_crt_instance(-1), m_vis_type(VisualizationType::NONE) {
     SetVerbose(verbose);
 }
 
-ChParserMbsYAML::ChParserMbsYAML(const std::string& yaml_filename, bool verbose) : ChParserYAML(), m_solver_loaded(false), m_model_loaded(false), m_crt_instance(-1) {
+ChParserMbsYAML::ChParserMbsYAML(const std::string& yaml_filename, bool verbose) : ChParserYAML(), m_solver_loaded(false), m_model_loaded(false), m_crt_instance(-1), m_vis_type(VisualizationType::NONE) {
     SetVerbose(verbose);
     LoadFile(yaml_filename);
 }
@@ -182,6 +182,18 @@ void ChParserMbsYAML::LoadSimData(const YAML::Node& yaml) {
             m_sim.enforce_realtime = sim["enforce_realtime"].as<bool>();
         if (sim["gravity"])
             m_sim.gravity = ReadVector(sim["gravity"]);
+        ReadFrameAcceleration(sim);
+        if (sim["num_threads"]) {
+            auto nt = sim["num_threads"];
+            if (nt["chrono"])
+                m_sim.num_threads_chrono = nt["chrono"].as<int>();
+            if (nt["collision"])
+                m_sim.num_threads_collision = nt["collision"].as<int>();
+            if (nt["eigen"])
+                m_sim.num_threads_eigen = nt["eigen"].as<int>();
+            if (nt["pardiso"])
+                m_sim.num_threads_pardiso = nt["pardiso"].as<int>();
+        }
     }
 
     // MBS-specific run-time visualization settings (optional)
@@ -189,6 +201,11 @@ void ChParserMbsYAML::LoadSimData(const YAML::Node& yaml) {
         if (yaml["visualization"]["type"])
             m_vis_type = ReadVisualizationType(yaml["visualization"]["type"]);
     }
+
+    // Run-time visualization is enabled only if a body visualization type other than NONE was specified.
+    // Note that this overrides the setting inferred in ChParserYAML::LoadSimData from the mere presence
+    // of a "visualization" node.
+    m_vis_settings.render = (m_vis_type != VisualizationType::NONE);
 }
 
 void ChParserMbsYAML::LoadSolverData(const YAML::Node& yaml) {
@@ -245,6 +262,11 @@ void ChParserMbsYAML::LoadSolverData(const YAML::Node& yaml) {
         ChAssertAlways(slvr["type"]);
         m_sim.solver.type = ReadSolverType(slvr["type"]);
         switch (m_sim.solver.type) {
+            case ChSolver::Type::PARDISO_MKL:
+            case ChSolver::Type::MUMPS:
+                if (slvr["lock_sparsity_pattern"])
+                    m_sim.solver.lock_sparsity_pattern = slvr["lock_sparsity_pattern"].as<bool>();
+                break;
             case ChSolver::Type::SPARSE_LU:
             case ChSolver::Type::SPARSE_QR:
                 if (slvr["lock_sparsity_pattern"])
@@ -579,7 +601,7 @@ void ChParserMbsYAML::LoadControllers(const YAML::Node& controllers) {
             load.local_point = controllers[i]["local_point"].as<bool>();
             load.point = ReadVector(controllers[i]["point"]);
         }
-        load.value = 0;
+        load.value = VNULL;
 
         if (m_verbose)
             load.PrintInfo(name);
@@ -693,7 +715,7 @@ void ChParserMbsYAML::LoadFEABeams(const YAML::Node& fea) {
                     auto diameter = sections[i]["diameter"].as<double>();
                     auto modulus = sections[i]["Young_modulus"].as<double>();
                     auto density = sections[i]["density"].as<double>();
-                    auto damping = sections[i]["Rayleight_damping"].as<double>();
+                    auto damping = sections[i]["Rayleigh_damping"].as<double>();
                     auto section_cable = chrono_types::make_shared<fea::ChBeamSectionCableANCF>();
                     section_cable->SetDiameter(diameter);
                     section_cable->SetYoungModulus(modulus);
@@ -822,6 +844,20 @@ void ChParserMbsYAML::LoadFEABeams(const YAML::Node& fea) {
 
         if (beams[i]["visualization"])
             beam.visualization = ChVisualShapeFEA::Settings::Read(beams[i]["visualization"]);
+
+        // Beam nodes included in output: 'all' or a list of 1-based node indices (node 1 at the start point)
+        if (beams[i]["output_nodes"]) {
+            const auto& a = beams[i]["output_nodes"];
+            if (a.IsScalar() && ChToUpper(a.as<std::string>()) == "ALL") {
+                beam.output_all_nodes = true;
+            } else if (a.IsSequence()) {
+                for (size_t j = 0; j < a.size(); j++)
+                    beam.output_nodes.push_back(a[j].as<int>());
+            } else {
+                cerr << "Invalid 'output_nodes' for beam '" << name << "' (expected 'all' or a list of node indices)" << endl;
+                throw std::runtime_error("Invalid beam output nodes");
+            }
+        }
 
         if (m_verbose)
             beam.PrintInfo(name);
@@ -1344,10 +1380,10 @@ int ChParserMbsYAML::Populate(ChSystem& sys, const ChFramed& model_frame, const 
         std::shared_ptr<ChLoadCustom> load;
         switch (item.second.type) {
             case BodyLoadType::FORCE:
-                load = chrono_types::make_shared<ChLoadBodyForce>(body, 0.0, item.second.local_load, item.second.point, item.second.local_point);
+                load = chrono_types::make_shared<ChLoadBodyForce>(body, VNULL, item.second.local_load, item.second.point, item.second.local_point);
                 break;
             case BodyLoadType::TORQUE:
-                load = chrono_types::make_shared<ChLoadBodyTorque>(body, 0.0, item.second.local_load);
+                load = chrono_types::make_shared<ChLoadBodyTorque>(body, VNULL, item.second.local_load);
                 break;
         }
         load->SetName(model_prefix + item.first);
@@ -1426,6 +1462,10 @@ int ChParserMbsYAML::Populate(ChSystem& sys, const ChFramed& model_frame, const 
 
     for (auto& item : m_beam_params) {
         auto mesh = chrono_types::make_shared<fea::ChMesh>();
+        mesh->SetName(model_prefix + item.first);
+
+        // Nodes of this beam instance, in order from the start to the end point
+        std::vector<std::shared_ptr<fea::ChNodeFEAbase>> beam_nodes;
 
         switch (item.second.type) {
             case FEABeamType::EULER: {
@@ -1437,8 +1477,10 @@ int ChParserMbsYAML::Populate(ChSystem& sys, const ChFramed& model_frame, const 
                                   item.second.end,                                                         // point B (end of beam)
                                   item.second.up                                                           // beam up direction
                 );
-                for (const auto& n : builder.GetLastBeamNodes())
+                for (const auto& n : builder.GetLastBeamNodes()) {
                     item.second.nodesXYZrot.push_back(n);
+                    beam_nodes.push_back(n);
+                }
                 for (const auto& e : builder.GetLastBeamElements())
                     item.second.elements.push_back(e);
                 break;
@@ -1451,8 +1493,10 @@ int ChParserMbsYAML::Populate(ChSystem& sys, const ChFramed& model_frame, const 
                                   item.second.start,                                                           // point A (start of beam)
                                   item.second.end                                                              // point B (end of beam)
                 );
-                for (const auto& n : builder.GetLastBeamNodes())
+                for (const auto& n : builder.GetLastBeamNodes()) {
                     item.second.nodesXYZ.push_back(n);
+                    beam_nodes.push_back(n);
+                }
                 for (const auto& e : builder.GetLastBeamElements())
                     item.second.elements.push_back(e);
                 break;
@@ -1481,6 +1525,27 @@ int ChParserMbsYAML::Populate(ChSystem& sys, const ChFramed& model_frame, const 
 
         sys.AddMesh(mesh);
         item.second.mesh.push_back(mesh);
+
+        // Register the selected beam nodes for output
+        if (item.second.output_all_nodes || !item.second.output_nodes.empty()) {
+            ChAssembly::Components::MeshNodes mesh_nodes;
+            mesh_nodes.mesh = mesh;
+            std::vector<int> ids = item.second.output_nodes;
+            if (item.second.output_all_nodes) {
+                ids.clear();
+                for (int id = 1; id <= (int)beam_nodes.size(); id++)
+                    ids.push_back(id);
+            }
+            for (auto id : ids) {
+                if (id < 1 || id > (int)beam_nodes.size()) {
+                    cerr << "Invalid output node " << id << " for beam '" << item.first << "' (valid range: 1 to " << beam_nodes.size() << ")" << endl;
+                    throw std::runtime_error("Invalid beam output node");
+                }
+                mesh_nodes.nodes.push_back(beam_nodes[id - 1]);
+                mesh_nodes.node_ids.push_back(id);
+            }
+            m_output_components.mesh_nodes.push_back(mesh_nodes);
+        }
     }
 
     // Create FEA shells
@@ -1790,7 +1855,7 @@ ChParserMbsYAML::SolverParams::SolverParams()
       use_sparsity_pattern_learner(true),
       tolerance(0.0),
       max_iterations(100),
-      enable_diagonal_preconditioner(false),
+      enable_diagonal_preconditioner(true),  // to address potentially large mass discrepancies
       overrelaxation_factor(1.0),
       sharpness_factor(1.0),
       warm_start(false) {}
@@ -2039,7 +2104,7 @@ void ChParserMbsYAML::MotorParams::PrintInfo(const std::string& name) const {
 
 #ifdef CHRONO_FEA
 
-ChParserMbsYAML::FEABeamParams::FEABeamParams() : type(FEABeamType::EULER), num_elements(0) {}
+ChParserMbsYAML::FEABeamParams::FEABeamParams() : type(FEABeamType::EULER), num_elements(0), output_all_nodes(false) {}
 
 ChParserMbsYAML::FEAConstraintParams::FEAConstraintParams() : type(FEAConstraintType::NODE_NODE) {}
 
@@ -2074,6 +2139,14 @@ void ChParserMbsYAML::FEABeamParams::PrintInfo(const std::string& name) const {
     cout << "     start:        " << start << endl;
     cout << "     end:          " << end << endl;
     cout << "     num elements: " << num_elements << endl;
+    if (output_all_nodes) {
+        cout << "     output nodes: all" << endl;
+    } else if (!output_nodes.empty()) {
+        cout << "     output nodes:";
+        for (auto id : output_nodes)
+            cout << " " << id;
+        cout << endl;
+    }
 }
 
 void ChParserMbsYAML::FEAConstraintParams::PrintInfo(const std::string& name) const {
@@ -2135,6 +2208,8 @@ ChJoint::Type ChParserMbsYAML::ReadJointType(const YAML::Node& a) {
         return ChJoint::Type::SPHERICAL;
     } else if (type == "PRISMATIC") {
         return ChJoint::Type::PRISMATIC;
+    } else if (type == "CYLINDRICAL") {
+        return ChJoint::Type::CYLINDRICAL;
     } else if (type == "UNIVERSAL") {
         return ChJoint::Type::UNIVERSAL;
     } else {
@@ -2153,7 +2228,8 @@ ChFramed ChParserMbsYAML::ReadJointFrame(const YAML::Node& a) {
             rot = QUNIT;
             break;
         case ChJoint::Type::REVOLUTE:
-        case ChJoint::Type::PRISMATIC: {
+        case ChJoint::Type::PRISMATIC:
+        case ChJoint::Type::CYLINDRICAL: {
             ChAssertAlways(a["axis"]);
             auto axis = ReadVector(a["axis"]);
             axis.Normalize();

@@ -70,6 +70,7 @@ double terrain_width = 3;
 std::string vehicle_json = "Polaris/Polaris.json";
 std::string engine_json = "Polaris/Polaris_EngineSimpleMap.json";
 std::string transmission_json = "Polaris/Polaris_AutomaticTransmissionSimpleMap.json";
+// Only rigid or FEA tires: handling tires have no collision geometry and cannot interact with CRM terrain
 std::string tire_json = "Polaris/Polaris_RigidTire.json";
 ////std::string tire_json = "Polaris/Polaris_ANCF4Tire_Lumped.json";
 
@@ -188,7 +189,7 @@ int main(int argc, char* argv[]) {
     sph_params.integration_scheme = integration_scheme;
     sph_params.initial_spacing = spacing;
     sph_params.d0_multiplier = 1.0;
-    sph_params.free_surface_threshold = 2.0;
+    sph_params.free_surface_threshold = 2.4;
     sph_params.artificial_viscosity = 0.5;
     sph_params.use_consistent_gradient_discretization = false;
     sph_params.use_consistent_laplacian_discretization = false;
@@ -439,20 +440,11 @@ void CreateFSIWheels(std::shared_ptr<WheeledVehicle> vehicle, CRMTerrain& terrai
     for (auto& axle : vehicle->GetAxles()) {
         for (auto& wheel : axle->GetWheels()) {
 #ifdef CHRONO_FEA
-            auto tire_fea = std::dynamic_pointer_cast<ChDeformableTire>(wheel->GetTire());
-            if (tire_fea) {
-                auto mesh = tire_fea->GetMesh();
-                if (mesh->GetNumContactSurfaces() > 0) {
-                    auto surf = mesh->GetContactSurface(0);
-                    cout << "FEA tire HAS contact surface: ";
-                    if (std::dynamic_pointer_cast<fea::ChContactSurfaceNodeCloud>(surf))
-                        cout << " NODE_CLOUD" << endl;
-                    else
-                        cout << " TRI_MESH" << endl;
-                } else {
-                    cout << "FEA tire DOES NOT HAVE contact surface!" << endl;
-                }
-                terrain.AddFeaMesh(mesh, false);
+            auto tire_def = std::dynamic_pointer_cast<ChDeformableTire>(wheel->GetTire());
+            if (tire_def) {
+                // Place the BCE markers inside the tire (surface normals point outward)
+                terrain.SetBcePattern2D(BcePatternMesh2D::INWARD, false);
+                terrain.AddFeaSurface(tire_def->GetSurfaceMesh(), false);
             } else {
                 terrain.AddRigidBody(wheel->GetSpindle(), geometry, false);
             }

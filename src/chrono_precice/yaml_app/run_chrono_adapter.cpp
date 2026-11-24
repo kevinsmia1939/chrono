@@ -19,6 +19,7 @@
 #include <filesystem>
 
 #include "chrono/ChConfig.h"
+#include "chrono/core/ChDataPath.h"
 #include "chrono/core/ChRealtimeStep.h"
 #include "chrono/assets/ChVisualSystem.h"
 #include "chrono/physics/ChSystem.h"
@@ -69,6 +70,7 @@ int main(int argc, char* argv[]) {
     cout << endl;
     cout << "Chrono YAML specification file: " << yaml_filename << endl;
     cout << "preCICE configuration file:     " << precice_filename << endl;
+    cout << "Chrono data directory:          " << GetChronoDataPath() << endl;
     cout << "Verbose?          " << (disable_verbose ? "no" : "yes") << endl;
     cout << "Visualization?    " << (disable_vis ? "no" : "yes") << endl;
     cout << "Output?           " << (disable_output ? "no" : "yes") << endl;
@@ -106,9 +108,10 @@ bool ParseArgs(int argc,
                bool& disable_output,
                bool& disable_vis) {
     ChCLI cli(argv[0], "");
-    cli.AddOption<std::string>("", "s,sim_file", "preCICE simulation specification file (YAML format)");
-    cli.AddOption<std::string>("", "p,precice_file", "preCICE configuration file (XML format)");
+    cli.AddOption<std::string>("", "p,participant_file", "Chrono preCICE participant specification file (YAML format)");
+    cli.AddOption<std::string>("", "c,precice_config_file", "preCICE configuration file (XML format)");
     cli.AddOption<std::string>("", "o,out_dir", "Output directory", out_dir);
+    cli.AddOption<std::string>("", "d,data_path", "Chrono data directory", GetChronoDataPath());
     cli.AddOption<bool>("", "quiet", "Disable terminal output");
     cli.AddOption<bool>("", "no_output", "Disable output");
     cli.AddOption<bool>("", "no_visualization", "Disable run-time visualization");
@@ -117,7 +120,7 @@ bool ParseArgs(int argc,
         return false;
 
     try {
-        yaml_filename = cli.Get("sim_file").as<std::string>();
+        yaml_filename = cli.Get("participant_file").as<std::string>();
     } catch (std::domain_error&) {
         cerr << "\nError: Missing YAML specification file." << endl;
         cli.Help();
@@ -125,7 +128,7 @@ bool ParseArgs(int argc,
     }
 
     try {
-        precice_filename = cli.Get("precice_file").as<std::string>();
+        precice_filename = cli.Get("precice_config_file").as<std::string>();
     } catch (std::domain_error&) {
         cerr << "\nError: Missing XML configuration file." << endl;
         cli.Help();
@@ -138,6 +141,12 @@ bool ParseArgs(int argc,
 
     out_dir = cli.Get("out_dir").as<std::string>();
 
+    // Chrono data files (e.g., colormaps) are located relative to this directory
+    auto data_path = cli.Get("data_path").as<std::string>();
+    if (!data_path.empty() && data_path.back() != '/' && data_path.back() != '\\')
+        data_path += '/';
+    SetChronoDataPath(data_path);
+
     return true;
 }
 
@@ -145,7 +154,7 @@ bool ParseArgs(int argc,
 
 bool RunMBS(const std::string& yaml_filename, const std::string& precice_filename, const std::string& out_dir, bool disable_verbose, bool disable_output, bool& disable_vis) {
     // Create the preCICE Chrono MBS participant
-    ChPreciceAdapterMbs participant(yaml_filename, !disable_verbose);
+    ChPreciceAdapterMbs participant(precice_filename, yaml_filename, !disable_verbose);
 
     // Create and set output directories
     const auto& model_name = participant.GetModelName();
@@ -166,10 +175,7 @@ bool RunMBS(const std::string& yaml_filename, const std::string& precice_filenam
     participant.EnableVisualization(!disable_vis);
     participant.EnableOutput(!disable_output);
 
-    // Register participant with preCICE
-    participant.RegisterParticipant(precice_filename);
-
-    // Initialize, run, and finalize participant simulation
+    // Create preCICE participant, initialize and run simulation
     participant.InitializeSimulation();
     participant.RunSimulation();
     participant.FinalizeSimulation();

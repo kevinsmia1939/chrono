@@ -35,7 +35,7 @@
     The Chrono::FSI module provides the following libraries:
     - Chrono_fsi:        implements a generic interface between a Chrono mutibody system and an arbitrary FSI-capable fluid solver.
     - Chrono_fsisph:     concrete, SPH-based FSI solver for incompressible Navier-Stokes and continuous granular dynamics.
-    - Chrono_fsitdpf:    concrete fluid solver, based on the time-dependent potential flow solver in HydroChrono.
+    - Chrono_fsitdpf:    concrete fluid solver, based on the time-dependent potential flow solver in SEA-Stack.
     - Chrono_fsisph_vsg: customized VSG-based run-time visualization system for SPH FSI problems.
 
     For additional information, see:
@@ -49,7 +49,7 @@
         @brief SPH-based fluid solver and FSI interface
         This sub-module provides a Smoothed Particle Hydrodynamics fluid solver with support for:
         - incompressible Navier-Stokes, and
-        - continuous representation model for terramechanics.
+        - the Continuum Representation Model (CRM) for terramechanics.
         @{
           @defgroup fsisph_physics Physics objects
           @defgroup fsisph_math Math support

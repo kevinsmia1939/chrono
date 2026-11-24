@@ -13,6 +13,10 @@
 # The `chrono-version` must match the Chrono major and minor version numbers.
 # The `model` object contains the schema for the model YAML specification.
 #
+# When used for the CRM terrain of a single-wheel test rig (see wheel_rig_simulation.schema), the model must use CRM
+# physics and a CARTESIAN box fluid domain. The fluid domain dimensions set the terrain patch size; the box origin,
+# container, computational domain, zero-pressure height, and initial velocity are ignored.
+#
 # =============================================================================
 
 required: [chrono-version, model]
@@ -126,7 +130,8 @@ function: &FUNCTION
 model:
   description: Definition of a Chrono::SPH fluid model
   type: object
-  required: [physics_problem, geometry_type, fluid_domain]
+  required: [physics_problem, geometry_type]
+  # note: fluid_domain is required unless a wave_tank is specified
 
   properties:
 
@@ -136,7 +141,7 @@ model:
       default: ''
 
     physics_problem:
-      description: Fluid physics type (incompresible fluid or homogenized granular dynamic).
+      description: Fluid physics type (incompressible fluid or homogenized granular dynamics).
       type: string
       enum: [CFD, CRM]
 
@@ -157,7 +162,7 @@ model:
             default: ABSOLUTE
         root:
             type: string
-            description: Root of data files, relatiuve to location of this script
+            description: Root of data files, relative to the location of this script
             default: "."
 
     fluid_properties:
@@ -168,20 +173,112 @@ model:
           description: Fluid density.
           type: number
           minimum: 0
-        viscosisty:
-          description: Laminar viscosity
+          default: 1000.0
+        viscosity:
+          description: Laminar viscosity.
           type: number
           minimum: 0
+          default: 0.1
         characteristic_length:
           description: Characteristic length for Reynolds number calculation.
           type: number
           minimum: 0
+          default: 1.0
 
     soil_properties:
       description: Physical parameters of the soil (CRM physics).
       type: object
       properties:
-        # TODO
+        density:
+          description: Bulk density.
+          type: number
+          minimum: 0
+          default: 1000.0
+        Young_modulus:
+          description: Young's modulus.
+          type: number
+          minimum: 0
+          default: 1e6
+        Poisson_ratio:
+          description: Poisson's ratio.
+          type: number
+          default: 0.3
+        mu_I0:
+          description: Reference inertia number.
+          type: number
+          minimum: 0
+          default: 0.03
+        mu_fric_s:
+          description: Static friction coefficient mu_s in mu = mu(I).
+          type: number
+          minimum: 0
+          default: 0.7
+        mu_fric_2:
+          description: Limit friction coefficient mu_2 in mu = mu(I).
+          type: number
+          minimum: 0
+          default: 0.7
+        average_diam:
+          description: Average granular particle diameter.
+          type: number
+          minimum: 0
+          default: 0.005
+        cohesion_coefficient:
+          description: Cohesion coefficient (not used by the MCC rheology).
+          type: number
+          minimum: 0
+          default: 0.0
+        rheology_model:
+          description: |
+            CRM rheology model: mu(I) (MU_OF_I) or Modified Cam-Clay critical-state plasticity (MCC).
+            MCC requires mcc_M > 0, mcc_kappa > 0, and mcc_lambda > mcc_kappa.
+            The initial pre-consolidation pressure is set to 1.01 times the initial particle pressure, which is the
+            hydrostatic pressure if `initial_states.depth_based_pressure` is enabled and 1 kPa otherwise.
+          type: string
+          enum: [MU_OF_I, MCC]
+          default: MU_OF_I
+        mcc_M:
+          description: Cam-Clay critical state line slope, q = M p (MCC only).
+          type: number
+          minimum: 0
+          default: 0.0
+        mcc_kappa:
+          description: |
+            Cam-Clay swelling index, the slope of the elastic unload/reload line in v-ln(p) (MCC only).
+            Sets the elastic bulk modulus K = v p / mcc_kappa. Must satisfy 0 < mcc_kappa < mcc_lambda.
+          type: number
+          minimum: 0
+          default: 0.0
+        mcc_lambda:
+          description: |
+            Cam-Clay compression index, the slope of the normal consolidation line in v-ln(p) (MCC only).
+            Must be larger than mcc_kappa.
+          type: number
+          minimum: 0
+          default: 0.0
+        mcc_v_lambda:
+          description: Cam-Clay specific volume at the reference pressure of 1000 Pa (MCC only).
+          type: number
+          minimum: 0
+          default: 2.0
+
+    initial_states:
+      description: Initialization of the SPH particle states.
+      type: object
+      properties:
+        depth_based_pressure:
+          description: |
+            Whether to initialize particle pressure from hydrostatic depth.
+            If true, `zero_height` is required (except for a wheel test rig terrain, which uses the patch surface).
+          type: boolean
+          default: false
+        zero_height:
+          description: Height of the zero-pressure level (required if depth_based_pressure is true; ignored for a wheel test rig terrain).
+          type: number
+        initial_velocity:
+          <<: *VECTOR3D
+          description: Uniform initial velocity applied to all SPH particles.
+          default: [0, 0, 0]
 
     wave_tank:
       description: Specification of a wave tank with wave maker mechanism.
@@ -202,12 +299,19 @@ model:
           description: Initial water depth in the tank.
           type: number
           minimum: 0
+        end_wall:
+          description: Whether to create a wall at the far end of the tank.
+          type: boolean
+          default: true
         profile:
           <<: *DATA_ARRAY_2
           description: Profile function of the water tank bottom.
         actuation_function:
           <<: *FUNCTION
-          description: Function of time defining actuation of the wave maker mechanism.
+          description: |
+            Function of time defining actuation of the wave maker mechanism.
+            In addition to the properties of a generic function object, an optional `delay` property
+            specifies a time offset (in seconds) before wave maker actuation begins (default: 0).
 
     fluid_domain:
       description: Specification of the SPH fluid domain.
@@ -220,10 +324,33 @@ model:
           <<: *VECTOR3D
           description: Origin of the fluid domain box (CARTESIAN geometry).
         box_walls:
-          description: Boundary walls around the fluid domain (CARTESIAN geometry)
+          description: |
+            Boundary walls around the fluid domain (CARTESIAN geometry).
+            Each entry is a pair of flags [negative side, positive side] for the corresponding direction.
           type: object
+          required: [x, y, z]
           properties:
-          # TODO
+            x:
+              description: Walls normal to the X direction [X_NEG, X_POS]
+              type: array
+              items:
+                type: boolean
+              minItems: 2
+              maxItems: 2
+            y:
+              description: Walls normal to the Y direction [Y_NEG, Y_POS]
+              type: array
+              items:
+                type: boolean
+              minItems: 2
+              maxItems: 2
+            z:
+              description: Walls normal to the Z direction [Z_NEG, Z_POS]
+              type: array
+              items:
+                type: boolean
+              minItems: 2
+              maxItems: 2
         inner_radius:
           description: Inner radius of the fluid domain cylindrical annulus (CYLINDRICAL geometry)
           type: number
@@ -237,10 +364,26 @@ model:
           <<: *VECTOR3D
           description: Origin of the fluid domain cylindrical annulus (CYLINDRICAL geometry).
         cyl_walls:
-          description: Boundary walls around the fluid domain (CYLINDRICAL geometry)
+          description: |
+            Boundary walls around the fluid domain (CYLINDRICAL geometry).
+            Each entry is a pair of flags for the two sides of the corresponding boundary.
           type: object
+          required: [side, z]
           properties:
-          #TODO
+            side:
+              description: Cylindrical surfaces [inner (SIDE_INT), outer (SIDE_EXT)]
+              type: array
+              items:
+                type: boolean
+              minItems: 2
+              maxItems: 2
+            z:
+              description: End caps normal to the Z direction [Z_NEG, Z_POS]
+              type: array
+              items:
+                type: boolean
+              minItems: 2
+              maxItems: 2
 
     container:
       description: Specification of the container boundary.
@@ -253,10 +396,33 @@ model:
           <<: *VECTOR3D
           description: Origin of the box container (CARTESIAN geometry).
         box_walls:
-          description: Container boundary walls (CARTESIAN geometry)
+          description: |
+            Container boundary walls (CARTESIAN geometry).
+            Each entry is a pair of flags [negative side, positive side] for the corresponding direction.
           type: object
+          required: [x, y, z]
           properties:
-          # TODO
+            x:
+              description: Walls normal to the X direction [X_NEG, X_POS]
+              type: array
+              items:
+                type: boolean
+              minItems: 2
+              maxItems: 2
+            y:
+              description: Walls normal to the Y direction [Y_NEG, Y_POS]
+              type: array
+              items:
+                type: boolean
+              minItems: 2
+              maxItems: 2
+            z:
+              description: Walls normal to the Z direction [Z_NEG, Z_POS]
+              type: array
+              items:
+                type: boolean
+              minItems: 2
+              maxItems: 2
         inner_radius:
           description: Inner radius of the cylindrical annulus container (CYLINDRICAL geometry)
           type: number
@@ -270,10 +436,26 @@ model:
           <<: *VECTOR3D
           description: Origin of the cylindrical annulus container (CYLINDRICAL geometry).
         cyl_walls:
-          description: Container boundary walls (CYLINDRICAL geometry)
+          description: |
+            Container boundary walls (CYLINDRICAL geometry).
+            Each entry is a pair of flags for the two sides of the corresponding boundary.
           type: object
+          required: [side, z]
           properties:
-          #TODO
+            side:
+              description: Cylindrical surfaces [inner (SIDE_INT), outer (SIDE_EXT)]
+              type: array
+              items:
+                type: boolean
+              minItems: 2
+              maxItems: 2
+            z:
+              description: End caps normal to the Z direction [Z_NEG, Z_POS]
+              type: array
+              items:
+                type: boolean
+              minItems: 2
+              maxItems: 2
 
     computational_domain:
       description: Specification of the FSI computational domain (AABB) and boundary condition types.
@@ -285,15 +467,15 @@ model:
         aabb_max:
           <<: *VECTOR3D
           description: Max corner of the computational domain AABB.
-        x_bce_type:
+        x_bc_type:
           description: BC type in X direction (negative and positive X)
           type: string
           enum: [NONE, PERIODIC, INLET_OUTLET]
-        y_bce_type:
+        y_bc_type:
           description: BC type in Y direction (negative and positive Y)
           type: string
           enum: [NONE, PERIODIC, INLET_OUTLET]
-        z_bce_type:
+        z_bc_type:
           description: BC type in Z direction (negative and positive Z)
           type: string
           enum: [NONE, PERIODIC, INLET_OUTLET]

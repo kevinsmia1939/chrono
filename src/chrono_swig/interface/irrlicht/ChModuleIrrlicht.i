@@ -27,6 +27,7 @@
 
 // For optional casting of polimorphic objects:
 %include "../chrono_cast.i" 
+%include "../chrono_ignore_operators.i"
 
 // For supporting shared pointers:
 %include <std_shared_ptr.i>
@@ -39,6 +40,18 @@
 #include "chrono/solver/ChSolver.h"                      //// RADU: REMOVE?
 
 #include "chrono/assets/ChVisualShapes.h"
+
+#include "chrono/functions/ChFunction.h"
+#include "chrono/functions/ChFunctionPosition.h"
+#include "chrono/functions/ChFunctionPositionLine.h"
+#include "chrono/functions/ChFunctionPositionSetpoint.h"
+#include "chrono/functions/ChFunctionPositionXYZFunctions.h"
+#include "chrono/functions/ChFunctionRotation.h"
+#include "chrono/functions/ChFunctionRotationABCFunctions.h"
+#include "chrono/functions/ChFunctionRotationAxis.h"
+#include "chrono/functions/ChFunctionRotationBSpline.h"
+#include "chrono/functions/ChFunctionRotationSetpoint.h"
+#include "chrono/functions/ChFunctionRotationSQUAD.h"
 
 #include <irrlicht.h>
 #include "chrono_irrlicht/ChIrrTools.h"
@@ -122,8 +135,6 @@ using namespace gui;
 // in the .i file, before the %include of the .h, even if already forwarded in .h
 
 
-// WARNING: the DrawChFunction is not working properly since it cannot recognize that ChFunction_XXX is derived from ChFunction
-
 %import(module="pychrono.core") "chrono_swig/interface/core/ChClassFactory.i"
 %import(module="pychrono.core") "chrono_swig/interface/core/ChVector2.i"
 %import(module="pychrono.core") "chrono_swig/interface/core/ChVector3.i"
@@ -131,7 +142,7 @@ using namespace gui;
 %import(module="pychrono.core") "chrono_swig/interface/core/ChCoordsys.i"
 %import(module="pychrono.core") "chrono_swig/interface/core/ChFrame.i"
 // %import(module="pychrono.core") "../../../chrono/functions/ChFunction.h"
-// %import(module="pychrono.core") "chrono_swig/interface/core/ChFunction.i"
+%import(module="pychrono.core") "chrono_swig/interface/core/ChFunction.i"
 %import(module="pychrono.core") "chrono_swig/interface/core/ChObject.i" // ChObject should be imported before ChPhysicsItem
 %import(module="pychrono.core") "chrono_swig/interface/core/ChPhysicsItem.i"
 %import(module="pychrono.core") "chrono_swig/interface/core/ChVisualMaterial.i"
@@ -147,11 +158,10 @@ using namespace gui;
 
 #endif             // --------------------------------------------------------------------- CSHARP
 
-%include "IReferenceCounted.h"                         //// RADU: REMOVE?
-%include "IImage.h"                                    //// RADU: REMOVE?
-%include "IImageWriter.h"                              //// RADU: REMOVE?
-%ignore irr::io::createWriteFile;                      //// RADU: REMOVE?
-%include "IWriteFile.h"                                //// RADU: REMOVE?
+// These headers were also included here, before SColor.h and SMaterial.h. Since SWIG parses
+// each file only once, that first (too early) parse was the effective one and left IImage
+// referring to SColor and ECOLOR_FORMAT as opaque placeholders. They are included below, in
+// the correct position.
 %include "irrTypes.h"
 %include "vector2d.h"
 %template(vector2df) irr::core::vector2d<irr::f32>;
@@ -165,8 +175,8 @@ using namespace gui;
 %template(rectf) irr::core::rect<irr::f32>;
 %template(recti) irr::core::rect<irr::s32>;
 %include "SColor.h"
-%include "SMaterial.h"
 %include "SMaterialLayer.h"
+%include "SMaterial.h"
 %include "IReferenceCounted.h"
 %include "IImage.h"
 %include "IImageWriter.h"

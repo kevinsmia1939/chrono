@@ -17,7 +17,9 @@
 //// - output
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
+#include <limits>
 
 #include "chrono/utils/ChUtils.h"
 #include "chrono/input_output/ChOutputASCII.h"
@@ -38,6 +40,7 @@ ChParserSphYAML::ChParserSphYAML(const std::string& yaml_filename, bool verbose)
     : ChParserCfdYAML(verbose),
       m_has_wavetank(false),
       m_depth_based_pressure(false),
+      m_zero_height(std::numeric_limits<double>::quiet_NaN()),
       m_initial_velocity(false),
       m_velocity(VNULL),
       m_loaded(false),
@@ -135,6 +138,7 @@ void ChParserSphYAML::LoadSimData(const YAML::Node& yaml) {
             m_sim.end_time = sim["end_time"].as<double>();
         if (sim["gravity"])
             m_sim.gravity = ReadVector(sim["gravity"]);
+        ReadFrameAcceleration(sim);
     }
 
     // SPH-specific run-time visualization (optional)
@@ -147,106 +151,138 @@ void ChParserSphYAML::LoadSimData(const YAML::Node& yaml) {
     }
 }
 
+void ChParserSphYAML::ReadSoilProperties(const YAML::Node& a, fsi::sph::ChFsiFluidSystemSPH::SoilProperties& props) {
+    if (a["density"])
+        props.density = a["density"].as<double>();
+    if (a["Young_modulus"])
+        props.Young_modulus = a["Young_modulus"].as<double>();
+    if (a["Poisson_ratio"])
+        props.Poisson_ratio = a["Poisson_ratio"].as<double>();
+    if (a["mu_I0"])
+        props.mu_I0 = a["mu_I0"].as<double>();
+    if (a["mu_fric_s"])
+        props.mu_fric_s = a["mu_fric_s"].as<double>();
+    if (a["mu_fric_2"])
+        props.mu_fric_2 = a["mu_fric_2"].as<double>();
+    if (a["average_diam"])
+        props.average_diam = a["average_diam"].as<double>();
+    if (a["cohesion_coefficient"])
+        props.cohesion_coeff = a["cohesion_coefficient"].as<double>();
+    if (a["rheology_model"])
+        props.rheology_model = ReadRheologyModel(a["rheology_model"]);
+    if (a["mcc_M"])
+        props.mcc_M = a["mcc_M"].as<double>();
+    if (a["mcc_kappa"])
+        props.mcc_kappa = a["mcc_kappa"].as<double>();
+    if (a["mcc_lambda"])
+        props.mcc_lambda = a["mcc_lambda"].as<double>();
+    if (a["mcc_v_lambda"])
+        props.mcc_v_lambda = a["mcc_v_lambda"].as<double>();
+}
+
 void ChParserSphYAML::LoadSolverData(const YAML::Node& yaml) {
+    ReadSPHParameters(yaml, m_sim.sph, m_sim.time_step);
+    m_solver_loaded = true;
+}
+
+void ChParserSphYAML::ReadSPHParameters(const YAML::Node& yaml, fsi::sph::ChFsiFluidSystemSPH::SPHParameters& sph, double& time_step) {
     // Base SPH parameters
     if (yaml["sph"]) {
         auto a = yaml["sph"];
         if (a["eos_type"])
-            m_sim.sph.eos_type = ReadEosType(a["eos_type"]);
+            sph.eos_type = ReadEosType(a["eos_type"]);
         if (a["use_delta_sph"])
-            m_sim.sph.use_delta_sph = a["use_delta_sph"].as<bool>();
+            sph.use_delta_sph = a["use_delta_sph"].as<bool>();
         if (a["delta_sph_coefficient"])
-            m_sim.sph.delta_sph_coefficient = a["delta_sph_coefficient"].as<double>();
+            sph.delta_sph_coefficient = a["delta_sph_coefficient"].as<double>();
         if (a["max_velocity"])
-            m_sim.sph.max_velocity = a["max_velocity"].as<double>();
+            sph.max_velocity = a["max_velocity"].as<double>();
         if (a["min_distance_coefficient"])
-            m_sim.sph.min_distance_coefficient = a["min_distance_coefficient"].as<double>();
+            sph.min_distance_coefficient = a["min_distance_coefficient"].as<double>();
         if (a["density_reinit_steps"])
-            m_sim.sph.density_reinit_steps = a["density_reinit_steps"].as<int>();
+            sph.density_reinit_steps = a["density_reinit_steps"].as<int>();
         if (a["use_density_based_projection"])
-            m_sim.sph.use_density_based_projection = a["use_density_based_projection"].as<bool>();
+            sph.use_density_based_projection = a["use_density_based_projection"].as<bool>();
         if (a["free_surface_threshold"])
-            m_sim.sph.free_surface_threshold = a["free_surface_threshold"].as<double>();
+            sph.free_surface_threshold = a["free_surface_threshold"].as<double>();
     }
 
     // SPH kernel parameters
     if (yaml["kernel"]) {
         auto a = yaml["kernel"];
         if (a["kernel_type"])
-            m_sim.sph.kernel_type = ReadKernelType(a["kernel_type"]);
+            sph.kernel_type = ReadKernelType(a["kernel_type"]);
         if (a["initial_spacing"])
-            m_sim.sph.initial_spacing = a["initial_spacing"].as<double>();
+            sph.initial_spacing = a["initial_spacing"].as<double>();
         if (a["d0_multiplier"])
-            m_sim.sph.d0_multiplier = a["d0_multiplier"].as<double>();
+            sph.d0_multiplier = a["d0_multiplier"].as<double>();
     }
 
     // SPH discretization parameters
     if (yaml["discretization"]) {
         auto a = yaml["discretization"];
         if (a["use_consistent_gradient_discretization"])
-            m_sim.sph.use_consistent_gradient_discretization = a["use_consistent_gradient_discretization"].as<bool>();
+            sph.use_consistent_gradient_discretization = a["use_consistent_gradient_discretization"].as<bool>();
         if (a["use_consistent_laplacian_discretization"])
-            m_sim.sph.use_consistent_laplacian_discretization = a["use_consistent_laplacian_discretization"].as<bool>();
+            sph.use_consistent_laplacian_discretization = a["use_consistent_laplacian_discretization"].as<bool>();
     }
 
     // Boundary condition parameters
     if (yaml["boundary_conditions"]) {
         auto a = yaml["boundary_conditions"];
         if (a["boundary_method"])
-            m_sim.sph.boundary_method = ReadBoundaryMethod(a["boundary_method"]);
+            sph.boundary_method = ReadBoundaryMethod(a["boundary_method"]);
         if (a["num_bce_layers"])
-            m_sim.sph.num_bce_layers = a["num_bce_layers"].as<int>();
+            sph.num_bce_layers = a["num_bce_layers"].as<int>();
     }
 
     // Integration parameters
     if (yaml["integration"]) {
         auto a = yaml["integration"];
         ChAssertAlways(a["time_step"]);
-        m_sim.time_step = a["time_step"].as<double>();
+        time_step = a["time_step"].as<double>();
         if (a["integration_scheme"])
-            m_sim.sph.integration_scheme = ReadIntegrationScheme(a["integration_scheme"]);
+            sph.integration_scheme = ReadIntegrationScheme(a["integration_scheme"]);
         if (a["use_variable_time_step"])
-            m_sim.sph.use_variable_time_step = a["use_variable_time_step"].as<bool>();
+            sph.use_variable_time_step = a["use_variable_time_step"].as<bool>();
     }
 
     // Proximity search
     if (yaml["proximity_search"]) {
         auto a = yaml["proximity_search"];
         if (a["num_proximity_search_steps"])
-            m_sim.sph.num_proximity_search_steps = a["num_proximity_search_steps"].as<int>();
+            sph.num_proximity_search_steps = a["num_proximity_search_steps"].as<int>();
     }
 
     // Particle shifting
     if (yaml["particle_shifting"]) {
         auto a = yaml["particle_shifting"];
         if (a["shifting_method"])
-            m_sim.sph.shifting_method = ReadShiftingMethod(a["shifting_method"]);
+            sph.shifting_method = ReadShiftingMethod(a["shifting_method"]);
         if (a["shifting_xsph_eps"])
-            m_sim.sph.shifting_xsph_eps = a["shifting_xsph_eps"].as<double>();
+            sph.shifting_xsph_eps = a["shifting_xsph_eps"].as<double>();
         if (a["shifting_ppst_push"])
-            m_sim.sph.shifting_ppst_push = a["shifting_ppst_push"].as<double>();
+            sph.shifting_ppst_push = a["shifting_ppst_push"].as<double>();
         if (a["shifting_ppst_pull"])
-            m_sim.sph.shifting_ppst_pull = a["shifting_ppst_pull"].as<double>();
+            sph.shifting_ppst_pull = a["shifting_ppst_pull"].as<double>();
         if (a["shifting_beta_implicit"])
-            m_sim.sph.shifting_beta_implicit = a["shifting_beta_implicit"].as<double>();
+            sph.shifting_beta_implicit = a["shifting_beta_implicit"].as<double>();
         if (a["shifting_diffusion_A"])
-            m_sim.sph.shifting_diffusion_A = a["shifting_diffusion_A"].as<double>();
+            sph.shifting_diffusion_A = a["shifting_diffusion_A"].as<double>();
         if (a["shifting_diffusion_AFSM"])
-            m_sim.sph.shifting_diffusion_AFSM = a["shifting_diffusion_AFSM"].as<double>();
-        if (a["artificial_viscosity"])
-            m_sim.sph.shifting_diffusion_AFST = a["shifting_diffusion_AFST"].as<double>();
+            sph.shifting_diffusion_AFSM = a["shifting_diffusion_AFSM"].as<double>();
+        if (a["shifting_diffusion_AFST"])
+            sph.shifting_diffusion_AFST = a["shifting_diffusion_AFST"].as<double>();
     }
 
     // Viscosity parameters
     if (yaml["viscosity"]) {
         auto a = yaml["viscosity"];
         if (a["viscosity_method"])
-            m_sim.sph.viscosity_method = ReadViscosityMethod(a["viscosity_method"]);
+            sph.viscosity_method = ReadViscosityMethod(a["viscosity_method"]);
         if (a["artificial_viscosity"])
-            m_sim.sph.artificial_viscosity = a["artificial_viscosity"].as<double>();
+            sph.artificial_viscosity = a["artificial_viscosity"].as<double>();
     }
-
-    m_solver_loaded = true;
 }
 
 void ChParserSphYAML::LoadModelData(const YAML::Node& yaml) {
@@ -281,13 +317,13 @@ void ChParserSphYAML::LoadModelData(const YAML::Node& yaml) {
         if (m_verbose)
             cout << "read fluid properties" << endl;
 
-        auto a = model["fluid properties"];
+        auto a = model["fluid_properties"];
         if (a["density"])
             m_material.fluid_props.density = a["density"].as<double>();
         if (a["viscosity"])
             m_material.fluid_props.viscosity = a["viscosity"].as<double>();
-        if (a["char_length"])
-            m_material.fluid_props.char_length = a["char_length"].as<double>();
+        if (a["characteristic_length"])
+            m_material.fluid_props.char_length = a["characteristic_length"].as<double>();
     }
 
     // Read soil material properties
@@ -295,23 +331,7 @@ void ChParserSphYAML::LoadModelData(const YAML::Node& yaml) {
         if (m_verbose)
             cout << "read soil properties" << endl;
 
-        auto a = model["soil properties"];
-        if (a["density"])
-            m_material.soil_props.density = a["density"].as<double>();
-        if (a["Young_modulus"])
-            m_material.soil_props.Young_modulus = a["Young_modulus"].as<double>();
-        if (a["Poisson_ratio"])
-            m_material.soil_props.Poisson_ratio = a["Poisson_ratio"].as<double>();
-        if (a["mu_I0"])
-            m_material.soil_props.mu_I0 = a["mu_I0"].as<double>();
-        if (a["mu_fric_s"])
-            m_material.soil_props.mu_fric_s = a["mu_fric_s"].as<double>();
-        if (a["mu_fric_2"])
-            m_material.soil_props.mu_fric_2 = a["mu_fric_2"].as<double>();
-        if (a["average_diam"])
-            m_material.soil_props.average_diam = a["average_diam"].as<double>();
-        if (a["cohesion_coefficient"])
-            m_material.soil_props.cohesion_coeff = a["cohesion_coefficient"].as<double>();
+        ReadSoilProperties(model["soil_properties"], m_material.soil_props);
     }
 
     // Read SPH state initialization settings
@@ -320,11 +340,10 @@ void ChParserSphYAML::LoadModelData(const YAML::Node& yaml) {
             cout << "read initial state settings" << endl;
 
         auto a = model["initial_states"];
-        if (a["depth_based_pressure"]) {
-            m_depth_based_pressure = true;
-            ChAssertAlways(a["zero_height"]);
+        if (a["depth_based_pressure"])
+            m_depth_based_pressure = a["depth_based_pressure"].as<bool>();
+        if (a["zero_height"])
             m_zero_height = a["zero_height"].as<double>();
-        }
         if (a["initial_velocity"]) {
             m_initial_velocity = true;
             m_velocity = ReadVector(a["initial_velocity"]);
@@ -444,23 +463,23 @@ void ChParserSphYAML::LoadModelData(const YAML::Node& yaml) {
                     }
                     break;
                 case GeometryType::CYLINDRICAL:
-                    m_geometry.fluid_domain_cylindrical = chrono_types::make_unique<AnnulusDomain>();
+                    m_geometry.container_cylindrical = chrono_types::make_unique<AnnulusDomain>();
                     ChAssertAlways(a["inner_radius"]);
                     ChAssertAlways(a["outer_radius"]);
                     ChAssertAlways(a["height"]);
-                    m_geometry.fluid_domain_cylindrical->inner_radius = a["inner_radius"].as<double>();
-                    m_geometry.fluid_domain_cylindrical->outer_radius = a["outer_radius"].as<double>();
-                    m_geometry.fluid_domain_cylindrical->height = a["height"].as<double>();
+                    m_geometry.container_cylindrical->inner_radius = a["inner_radius"].as<double>();
+                    m_geometry.container_cylindrical->outer_radius = a["outer_radius"].as<double>();
+                    m_geometry.container_cylindrical->height = a["height"].as<double>();
                     if (a["cyl_origin"]) {
-                        m_geometry.fluid_domain_cylindrical->origin = ReadVector(a["cyl_origin"]);
+                        m_geometry.container_cylindrical->origin = ReadVector(a["cyl_origin"]);
                     } else {
-                        m_geometry.fluid_domain_cylindrical->origin = VNULL;
+                        m_geometry.container_cylindrical->origin = VNULL;
                     }
                     if (a["cyl_walls"]) {
-                        m_geometry.fluid_domain_cylindrical->wall_code = ReadWallFlagsCylindrical(a["cyl_walls"]);
-                        has_walls = (m_geometry.fluid_domain_cylindrical->wall_code != fsi::sph::CylSide::NONE);
+                        m_geometry.container_cylindrical->wall_code = ReadWallFlagsCylindrical(a["cyl_walls"]);
+                        has_walls = (m_geometry.container_cylindrical->wall_code != fsi::sph::CylSide::NONE);
                     } else {
-                        m_geometry.fluid_domain_cylindrical->wall_code = fsi::sph::CylSide::NONE;
+                        m_geometry.container_cylindrical->wall_code = fsi::sph::CylSide::NONE;
                     }
                     break;
             }
@@ -546,6 +565,9 @@ class SPHPropertiesCallback : public fsi::sph::ChFsiFluidSystemSPH::ParticleProp
         : ParticlePropertiesCallback(), set_pressure(set_pressure), zero_height(zero_height), set_velocity(set_velocity), init_velocity(init_velocity) {}
 
     virtual void set(const fsi::sph::ChFsiFluidSystemSPH& sysSPH, const ChVector3d& pos) override {
+        // Start from the default properties, so that every property not overridden below is still set
+        ParticlePropertiesCallback::set(sysSPH, pos);
+
         if (set_pressure) {
             double gz = std::abs(sysSPH.GetGravitationalAcceleration().z());
             double c2 = sysSPH.GetSoundSpeed() * sysSPH.GetSoundSpeed();
@@ -634,6 +656,10 @@ std::shared_ptr<fsi::sph::ChFsiProblemSPH> ChParserSphYAML::CreateFsiProblemSPH(
 
     // Set callback for initial states
     if (m_depth_based_pressure || m_initial_velocity) {
+        if (m_depth_based_pressure && std::isnan(m_zero_height)) {
+            cerr << "[ChParserSphYAML::CreateFsiProblemSPH] Error: depth-based pressure requires 'initial_states.zero_height'." << endl;
+            throw std::runtime_error("Missing zero_height");
+        }
         m_fsi_problem->RegisterParticlePropertiesCallback(chrono_types::make_shared<SPHPropertiesCallback>(m_depth_based_pressure, m_zero_height, m_initial_velocity, m_velocity));
     }
 
@@ -752,6 +778,15 @@ void ChParserSphYAML::MaterialProperties::PrintInfo() const {
             cout << "      mu fric_2 :            " << soil_props.mu_fric_2 << endl;
             cout << "      average diameter :     " << soil_props.average_diam << endl;
             cout << "      cohesion coefficient : " << soil_props.cohesion_coeff << endl;
+            if (soil_props.rheology_model == fsi::sph::RheologyCRM::MCC) {
+                cout << "      rheology model :       MCC" << endl;
+                cout << "      MCC M :                " << soil_props.mcc_M << endl;
+                cout << "      MCC kappa :            " << soil_props.mcc_kappa << endl;
+                cout << "      MCC lambda :           " << soil_props.mcc_lambda << endl;
+                cout << "      MCC v_lambda :         " << soil_props.mcc_v_lambda << endl;
+            } else {
+                cout << "      rheology model :       MU_OF_I" << endl;
+            }
             break;
     }
 }
@@ -836,6 +871,15 @@ fsi::sph::PhysicsProblem ChParserSphYAML::ReadPhysicsProblemType(const YAML::Nod
     return fsi::sph::PhysicsProblem::CFD;
 }
 
+fsi::sph::RheologyCRM ChParserSphYAML::ReadRheologyModel(const YAML::Node& a) {
+    auto val = ChToUpper(a.as<std::string>());
+    if (val == "MU_OF_I")
+        return fsi::sph::RheologyCRM::MU_OF_I;
+    if (val == "MCC")
+        return fsi::sph::RheologyCRM::MCC;
+    return fsi::sph::RheologyCRM::MU_OF_I;
+}
+
 fsi::sph::ChFsiProblemWavetank::WavemakerType ChParserSphYAML::ReadWavetankType(const YAML::Node& a) {
     auto val = ChToUpper(a.as<std::string>());
     if (val == "PISTON")
@@ -903,7 +947,7 @@ fsi::sph::ShiftingMethod ChParserSphYAML::ReadShiftingMethod(const YAML::Node& a
         return fsi::sph::ShiftingMethod::PPST_XSPH;
     if (val == "DIFFUSION")
         return fsi::sph::ShiftingMethod::DIFFUSION;
-    if (val == "NONE")
+    if (val == "DIFFUSION_XSPH")
         return fsi::sph::ShiftingMethod::DIFFUSION_XSPH;
     return fsi::sph::ShiftingMethod::XSPH;
 }

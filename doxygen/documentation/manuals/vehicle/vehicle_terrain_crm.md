@@ -36,10 +36,11 @@ API differences that matter most
    - CRM: call `Construct(...)` (box, heightmap, or particle/BCE files), then `Initialize()`.
 3. Soil model parameters:
    - SCM: `SetSoilParameters(...)` or `RegisterSoilParametersCallback(...)`.
-   - CRM: `SetElasticSPH(...)` and `SetSPHParameters(...)` (SPH material + solver settings).
+   - CRM: `SetCrmSPH(...)` and `SetSPHParameters(...)` (SPH material + solver settings).
 4. Vehicle/solid coupling:
    - SCM: vehicle interaction comes through regular Chrono contact shapes (no explicit FSI registration).
-   - CRM: you must explicitly add interacting solids to FSI (`AddRigidBody(...)`, `AddFeaMesh(...)`), so BCE markers are
+   - CRM: you must explicitly add interacting solids to FSI (`AddRigidBody(...)`, `AddFeaMesh(...)`, or `AddFeaSurface(...)`
+     with the surface mesh of a deformable tire, `ChDeformableTire::GetSurfaceMesh()`), so BCE markers are
      generated.
 5. Time stepping ownership:
    - SCM: usually the vehicle/system step advances terrain effects through contact.
@@ -49,8 +50,9 @@ API differences that matter most
    - CRM: `SetActiveDomain(...)` limits active SPH particles and `ConstructMovingPatch(...)` can relocate soil forward.
 7. Terrain query semantics:
    - SCM: `GetHeight/GetNormal/GetCoefficientFriction` are meaningful.
-   - CRM: these currently return placeholder values (`0`, world-up normal, `0` friction), so CRM is not intended for
-     height/normal/friction-based tire models.
+   - CRM: these currently return placeholder values (`0`, world-up normal, `0` friction), so CRM cannot be used with
+     handling tire models (`ChForceElementTire`: TMeasy, TMsimple, Pac89, Pac02, Fiala). Use rigid or FEA tires,
+     registered with the FSI system.
 
 Minimal API patterns
 --------------------
@@ -72,10 +74,10 @@ terrain.SetGravitationalAcceleration({0, 0, -9.81});
 terrain.SetStepSizeCFD(step_size);
 terrain.RegisterVehicle(vehicle.get());           // recommended in vehicle demos
 
-terrain.SetElasticSPH(mat_props);
+terrain.SetCrmSPH(mat_props);
 terrain.SetSPHParameters(sph_params);
 
-terrain.AddRigidBody(spindle, geometry, false);  // or AddFeaMesh(...)
+terrain.AddRigidBody(spindle, geometry, false);  // or AddFeaSurface(tire->GetSurfaceMesh(), false)
 terrain.SetActiveDomain(active_box_dim);         // optional
 
 terrain.Construct(...);                          // box / heightmap / marker files

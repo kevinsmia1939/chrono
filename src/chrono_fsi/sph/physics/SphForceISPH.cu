@@ -37,6 +37,20 @@ namespace chrono {
 namespace fsi {
 namespace sph {
 
+// Reduction operators.
+// Defined locally rather than using thrust::minimum / thrust::plus /
+// thrust::equal_to: those are deprecated in CCCL 3.1 (CUDA 13.x) in favor of
+// cuda::minimum / cuda::std::plus / cuda::std::equal_to, which are libcu++ and
+// therefore unavailable under rocThrust (the Thrust device system used on AMD).
+
+struct real_min {
+    __host__ __device__ Real operator()(const Real& a, const Real& b) const { return a < b ? a : b; }
+};
+
+struct real_sum {
+    __host__ __device__ Real operator()(const Real& a, const Real& b) const { return a + b; }
+};
+
 void CopyParametersToDevice_SphForceISPH(std::shared_ptr<ChFsiParamsSPH> paramsH, std::shared_ptr<Counters> countersH) {
     gpuMemcpyToSymbolAsync(paramsD, paramsH.get(), sizeof(ChFsiParamsSPH));
     gpuCheckError();
@@ -59,10 +73,10 @@ __device__ void BCE_Vel_Acc(int i_idx,
                             Real3* omegaAccLRF_fsiBodies_D,
                             uint* rigid_BCEsolids_D,
 
-                            Real3* flex1D_vel_fsi_fea_D,  // vel of fea 1d element
-                            Real3* flex1D_acc_fsi_fea_D,  // acc of fea 1d element
-                            Real3* flex2D_vel_fsi_fea_D,  // vel of fea 2d element
-                            Real3* flex2D_acc_fsi_fea_D,  // acc of fea 2d element
+                            Real3* flex1D_vel_fsi_fea_D,  // vel of fea 1d nodes
+                            Real3* flex1D_acc_fsi_fea_D,  // acc of fea 1d nodes
+                            Real3* flex2D_vel_fsi_fea_D,  // vel of fea 2d nodes
+                            Real3* flex2D_acc_fsi_fea_D,  // acc of fea 2d nodes
 
                             uint2* flex1D_Nodes_D,      // segment node indices
                             uint3* flex1D_BCEsolids_D,  // association of flex BCEs with a mesh and segment
@@ -122,8 +136,8 @@ __device__ void BCE_Vel_Acc(int i_idx,
             Real3 A0 = flex1D_acc_fsi_fea_D[seg_nodes.x];  // (absolute) acceleration of node 0
             Real3 A1 = flex1D_acc_fsi_fea_D[seg_nodes.y];  // (absolute) acceleration of node 1
 
-            Real3 V0 = flex1D_vel_fsi_fea_D[seg_nodes.x];  // (absolute) acceleration of node 0
-            Real3 V1 = flex1D_vel_fsi_fea_D[seg_nodes.y];  // (absolute) acceleration of node 1
+            Real3 V0 = flex1D_vel_fsi_fea_D[seg_nodes.x];  // (absolute) velocity of node 0
+            Real3 V1 = flex1D_vel_fsi_fea_D[seg_nodes.y];  // (absolute) velocity of node 1
 
             Real lambda0 = flex1D_BCEcoords_D[feaIndex].x;  // segment coordinate
             Real lambda1 = 1 - lambda0;                      // segment coordinate
@@ -144,9 +158,9 @@ __device__ void BCE_Vel_Acc(int i_idx,
             Real3 A1 = flex2D_acc_fsi_fea_D[tri_nodes.y];  // (absolute) acceleration of node 1
             Real3 A2 = flex2D_acc_fsi_fea_D[tri_nodes.z];  // (absolute) acceleration of node 2
 
-            Real3 V0 = flex2D_vel_fsi_fea_D[tri_nodes.x];  // (absolute) acceleration of node 0
-            Real3 V1 = flex2D_vel_fsi_fea_D[tri_nodes.y];  // (absolute) acceleration of node 1
-            Real3 V2 = flex2D_vel_fsi_fea_D[tri_nodes.z];  // (absolute) acceleration of node 2
+            Real3 V0 = flex2D_vel_fsi_fea_D[tri_nodes.x];  // (absolute) velocity of node 0
+            Real3 V1 = flex2D_vel_fsi_fea_D[tri_nodes.y];  // (absolute) velocity of node 1
+            Real3 V2 = flex2D_vel_fsi_fea_D[tri_nodes.z];  // (absolute) velocity of node 2
 
             Real lambda0 = flex2D_BCEcoords_D[flex2d_index].x;  // barycentric coordinate
             Real lambda1 = flex2D_BCEcoords_D[flex2d_index].y;  // barycentric coordinate
@@ -938,13 +952,13 @@ void SphForceISPH::Initialize() {
 struct my_Functor {
     Real ave;
     my_Functor(Real s) { ave = s; }
-    __host__ __device__ void operator()(Real& i) { i -= ave; }
+    __host__ __device__ void operator()(Real& i) const { i -= ave; }
 };
 
 struct my_Functor_real4y {
     Real ave;
     my_Functor_real4y(Real s) { ave = s; }
-    __host__ __device__ void operator()(Real4& i) { i.y -= ave; }
+    __host__ __device__ void operator()(Real4& i) const { i.y -= ave; }
 };
 
 void SphForceISPH::ForceSPH(std::shared_ptr<SphMarkerDataD> sortedSphMarkersD, Real time, Real step) {
@@ -961,7 +975,7 @@ void SphForceISPH::ForceSPH(std::shared_ptr<SphMarkerDataD> sortedSphMarkersD, R
     ////    sortedSphMarkersD->rhoPresMuD.begin(), sortedSphMarkersD->rhoPresMuD.end(), compare_Real4_z());
     ////Real Maxmu = length(*iter_mu);
 
-    size_t end_fluid = cH->numGhostMarkers + cH->numHelperMarkers + cH->numFluidMarkers;
+    size_t end_fluid = cH->numFluidMarkers;  // includes ghost and helper markers (see SetCounters)
     size_t end_bndry = end_fluid + cH->numBoundaryMarkers;
     size_t end_rigid = end_bndry + cH->numRigidMarkers;
     size_t end_flex = end_rigid + cH->numMesh1DMarkers + cH->numMesh2DMarkers;
@@ -1161,7 +1175,7 @@ void SphForceISPH::ForceSPH(std::shared_ptr<SphMarkerDataD> sortedSphMarkersD, R
         }
     }
     //    Real4_y unary_op_p;
-    //    thrust::plus<Real> binary_op;
+    //    real_sum binary_op;
     //    Real Ave_pressure = thrust::transform_reduce(sortedSphMarkersD->rhoPresMuD.begin(),
     //                                                 sortedSphMarkersD->rhoPresMuD.end(), unary_op_p, 0.0,
     //                                                 binary_op)
@@ -1205,7 +1219,7 @@ void SphForceISPH::ForceSPH(std::shared_ptr<SphMarkerDataD> sortedSphMarkersD, R
     gpuCheckErrorFlag(m_errflagD, "Shifting");
 
     Real4_x unary_op(pH->rho0);
-    thrust::plus<Real> binary_op;
+    real_sum binary_op;
     Real Ave_density_Err =
         thrust::transform_reduce(sortedSphMarkersD->rhoPresMuD.begin(), sortedSphMarkersD->rhoPresMuD.end(), unary_op, Real(0), binary_op) / (cH->numFluidMarkers * pH->rho0);
 
@@ -1218,7 +1232,7 @@ void SphForceISPH::ForceSPH(std::shared_ptr<SphMarkerDataD> sortedSphMarkersD, R
 
     // post-processing for conservative formulation
     if (pH->Conservative_Form && pH->ClampPressure) {
-        Real minP = thrust::transform_reduce(sortedSphMarkersD->rhoPresMuD.begin(), sortedSphMarkersD->rhoPresMuD.end(), Real4_y_min(), Real(1e9), thrust::minimum<Real>());
+        Real minP = thrust::transform_reduce(sortedSphMarkersD->rhoPresMuD.begin(), sortedSphMarkersD->rhoPresMuD.end(), Real4_y_min(), Real(1e9), real_min());
         my_Functor_real4y negate(minP);
         thrust::for_each(sortedSphMarkersD->rhoPresMuD.begin(), sortedSphMarkersD->rhoPresMuD.end(), negate);
         if (m_verbose)

@@ -34,7 +34,6 @@
 #     - COSIMULATION
 #     - SENSOR
 #     - SYNCHRONO
-#     - MATLAB (Apple Silicon)
 #     - MODAL
 #     - PARDISO_MKL (Apple Silicon)
 #     - PARDISO_PROJECT (Apple Silicon)
@@ -68,6 +67,9 @@ CASCADE_INSTALL_DIR="/usr/local/include/opencascade"
 SPECTRA_INCLUDE_DIR="/usr/local/include"
 
 SWIG_EXE="swig"
+
+# CMake finds the matching Python library and headers through this interpreter.
+PYTHON_EXE="$HOMEBREW_PREFIX/bin/python3"
 
 # ------------------------------------------------------------------------
 
@@ -109,9 +111,7 @@ cmake -G "${BUILDSYSTEM}" -B "${BUILD_DIR}" -S "${SOURCE_DIR}" \
       -Durdfdom_DIR:PATH=${URDF_INSTALL_DIR}/CMake \
       -Durdfdom_headers_DIR:PATH=${URDF_INSTALL_DIR}/CMake \
       -Dconsole_bridge_DIR:PATH=${URDF_INSTALL_DIR}/CMake \
-      -DPYTHON_EXECUTABLE:PATH=$HOMEBREW_PREFIX/bin \
-      -DPYTHON_INCLUDE_DIR:PATH=$HOMEBREW_PREFIX/Cellar/python@$BREW_PY_MAJOR/$BREW_PY_VER/Frameworks/Python.framework/Versions/$BREW_PY_MAJOR/include/python$BREW_PY_MAJOR \
-      -DPYTHON_LIBRARY:PATH=$HOMEBREW_PREFIX/Cellar/python@$BREW_PY_MAJOR/$BREW_PY_VER/Frameworks/Python.framework/Versions/$BREW_PY_MAJOR/lib/python$BREW_PY_MAJOR/config-$BREW_PY_MAJOR-darwin/libpython$BREW_PY_MAJOR.dylib
+      -DPython3_EXECUTABLE:FILEPATH=${PYTHON_EXE}
 
 
 # ------------------------------------------------------------------------

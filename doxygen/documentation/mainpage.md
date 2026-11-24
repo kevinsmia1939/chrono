@@ -33,6 +33,10 @@ Instructions for setting up an external project that uses Chrono.
 
   Fluid-solid interaction with the Chrono::FSI-SPH and Chrono::FSI-TDPF modules
 
+- [Chrono::preCICE](@ref manual_precice)
+
+  Partitioned multi-physics co-simulation with the preCICE coupling library
+
 - [Chrono::Sensor](@ref manual_sensor)
 
   Sensor modeling and simulation with the Chrono::Sensor module
@@ -68,6 +72,24 @@ Instructions for setting up an external project that uses Chrono.
 - [Chrono::ROS](@ref manual_ros)
 
   Integration with an external autonomy stack based on the Robot Operating System (ROS)
+
+---
+
+<h3>Developer Manuals</h3>
+
+These manuals describe the internal design of Chrono. They are written for the Chrono development team and for users who extend Chrono with their own classes (for example a new physics item, FEA element, or node type).
+They complement the User Manuals, which describe how to use Chrono, and the API reference, which documents individual classes and functions.
+
+- [Physics Item Lifecycle](@ref physics_item_lifecycle)
+
+---
+
+<h3>Verification and Validation</h3>
+
+These pages compare Chrono simulations with analytical solutions and reference results (verification) and with experiments (validation).
+Each page describes the tests and how they were set up, compares the results, and points to the programs that reproduce them.
+
+- [DEM Validation](@ref dem_validation)
 
 ---
 
